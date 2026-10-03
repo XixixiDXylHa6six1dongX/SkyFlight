@@ -350,30 +350,47 @@ def draw_hud(hud, shader, craft, screen_w, screen_h, fps=0.0):
     # ---------------- 右上：FPS
     hud.text('FPS %d' % int(fps), screen_w - pad - 100, pad + 4, 17, DIM)
 
-    # ---------------- 左上角：游戏名 + 版本号 + 机型（空白区，不会被切）
-    hud.text('SKYFLIGHT', pad + 2, pad + 2, 20, WHITE)
-    hud.text('V%s' % VERSION, pad + 2, pad + 28, 16, DIM)
+    # ---------------- 左上角：游戏名 / 版本号 + 机型 / 起落架状态
+    # 排版用实测文字宽度累加，不要再手写 x 偏移（之前把机型名写死在
+    # pad+62，而 "V1.4.0" 实际有 90.5 px 宽，两段就叠在一起了）。
+    lx = pad + 2
+    hud.text('SKYFLIGHT', lx, pad + 2, 20, WHITE)
+
+    ny = pad + 30
+    vtxt = 'V%s' % VERSION
+    hud.text(vtxt, lx, ny, 16, DIM)
+    vw = hud.text_width(vtxt, 16)
+
     sp = getattr(craft, 'spec', None)
     if sp is not None:
         name = sp.name_en.upper()
-        hud.text(name, pad + 62, pad + 28, 16,
-                 CYAN if sp.kind == 'jet' else DIM)
+        hud.text(name, lx + vw + 14, ny, 16,
+                 CYAN if sp.kind == 'jet' else WHITE)
 
-    # ---------------- 机型/起落架状态（在罗盘下方左侧）
+    # 机型特征 / 起落架状态：单独一行，带半透明底板，亮天空下也看得清
     if sp is not None:
-        iy = pad + 118
+        iy = pad + 62
+        lines = []
         if sp.gear_retract:
             g = craft.gear
             if g > 0.99:
-                gt, gc = 'GEAR DOWN', GREEN
+                lines.append(('GEAR DOWN', GREEN))
             elif g < 0.01:
-                gt, gc = 'GEAR UP', DIM
+                lines.append(('GEAR UP', CYAN))
             else:
-                gt, gc = 'GEAR %d%%' % int(g * 100), AMBER
-            hud.text(gt, pad + 2, iy, 16, gc)
+                lines.append(('GEAR %d%%' % int(g * 100), AMBER))
         else:
-            hud.text('GEAR FIXED', pad + 2, iy, 16, DIM)
+            lines.append(('GEAR FIXED', DIM))
         if sp.kind == 'jet':
-            hud.text('JET', pad + 2, iy + 20, 16, DIM)
+            lines.append(('TURBOJET', DIM))
+        else:
+            lines.append(('PISTON', DIM))
+
+        # 底板尺寸按最长那行算
+        bw = max(hud.text_width(t, 15) for t, _ in lines) + 16
+        bh = 17 * len(lines) + 10
+        hud.rect(lx - 3, iy - 4, bw, bh, BG)
+        for i, (t, col) in enumerate(lines):
+            hud.text(t, lx + 5, iy + i * 17, 15, col)
 
     hud.commit(screen_w, screen_h, shader)

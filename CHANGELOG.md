@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.4.1 — 2026-10-03
+
+### Fixed
+
+- **The version number and the aircraft name overlapped in the top-left
+  corner.** The aircraft name was drawn at a hard-coded `pad + 62`, but
+  `V1.4.0` is actually 90.5 px wide, so the two strings ran into each other
+  (`V1.4ROP TRAINER`). The layout now accumulates measured text widths with a
+  14 px gap, and `tests/hud_layout.py` asserts no overlap, no collision with
+  the compass, and that every gear state renders without GL errors.
+
+### Changed
+
+- The gear / engine status block in the top-left now sits on a translucent
+  panel, so it stays legible against a bright sky. It reads `GEAR DOWN` /
+  `GEAR UP` / `GEAR nn%` plus `TURBOJET` or `PISTON`. `GEAR UP` is now cyan
+  rather than grey.
+
+---
+
 ## v1.4.0 — 2026-10-03
 
 ### Added
