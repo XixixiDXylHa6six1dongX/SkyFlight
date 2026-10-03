@@ -291,6 +291,13 @@ def draw_hud(hud, shader, craft, screen_w, screen_h, fps=0.0):
     vcol = GREEN if vs_ > 1.0 else (AMBER if vs_ < -1.0 else WHITE)
     _panel(hud, xr, y0 + ph + 8, pw, ph, 'V/S', '%+.0f' % vs_, 'M/S', vcol=vcol)
 
+    # ---------------- 油门面板上方：减速板 / 襟翼状态
+    st_y = y0 - 24.0
+    if getattr(craft, 'airbrake', 0.0) > 0.05:
+        hud.text('BRAKE', xr + 4, st_y, 15, AMBER)
+    if abs(getattr(craft, 'flaps', 0.0)) > 0.05:
+        hud.text('FLAPS', xr + 76, st_y, 15, CYAN)
+
     # ---------------- 顶部中间：姿态仪（往下让出罗盘的位置）
     aw, ah = 210.0, 76.0
     ax = screen_w * 0.5 - aw * 0.5

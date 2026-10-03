@@ -18,18 +18,16 @@ from .version import VERSION, BUILD_DATE
 WINDOW_W, WINDOW_H = 1280, 760
 APP_NAME = 'SkyFlight 飞行模拟器'
 
-# 出生点：停在跑道靠南端，机头朝北（-Z），可以从头滑跑起飞
-SPAWN_ON_RUNWAY = True
-RUNWAY_START = (0.0, 0.0, 650.0)
-
-
 # 飞机模型最低点（起落架轮胎底）在局部坐标的 Y 值。
-# 机身原点离地高度 = -WHEEL_DROP
+# 机身原点离地高度 = WHEEL_DROP
 WHEEL_DROP = 1.07
 
-# 出生点：停在跑道靠南端，机头朝北（-Z），可以从头滑跑起飞
+# 出生点：停在跑道中段偏南，机头朝北（-Z）。
+# 放在 z=+560 而不是跑道最南端(700)：
+#   1) 留出足够滑跑距离
+#   2) 追尾相机朝前看 26 m，这样前方能看见长长的跑道，视野自然
 SPAWN_ON_RUNWAY = True
-RUNWAY_START = (0.0, 0.0, 650.0)
+RUNWAY_START = (0.0, 0.0, 560.0)
 
 
 def ground_at(x, z):
@@ -233,6 +231,7 @@ class SkyFlightApp:
         self.show_scenery = True
 
         self.plane_mesh = plane.build_plane()
+        self.shadow_mesh = plane.build_shadow()
         self.runway_mesh = plane.build_runway()
         self.tower_mesh = plane.build_tower()
         # 双层地形：近处细、远处大范围
@@ -500,10 +499,22 @@ class SkyFlightApp:
 
         # 飞机
         # 模型局部坐标和世界坐标一致：机头朝 -Z、右翼朝 +X、上朝 +Y，
-        # 所以直接用品姿态矩阵就行，不能再加镜像/翻转
+        # 所以直接用姿态矩阵就行，不能再加镜像/翻转
         # （之前多乘了一个绕 Y 轴 180° 的 flip，它把左右机翼对调了，
         #   机头方向不变所以肉眼看不出来，但滚转方向会画反）。
+        #
+        # 顺序：先画地面阴影，再画飞机，这样看起来是"停在地上"而不是浮着。
         R = gfx.euler_to_matrix(self.craft.pitch, self.craft.yaw, self.craft.roll)
+        shadow_m = np.eye(4, dtype=np.float32)
+        shadow_m[:3, :3] = R.astype(np.float32)
+        shadow_m[0, 3] = self.craft.pos[0]
+        shadow_m[2, 3] = self.craft.pos[2]
+        # 贴在地面上方一点点，避免和跑道/地形打架
+        shadow_m[1, 3] = ground_at(self.craft.pos[0], self.craft.pos[2]) + 0.035
+        self.obj_shader.set_mat4('uModel', shadow_m)
+        self.obj_shader.set_mat3('uNormalMat', shadow_m[:3, :3].astype(np.float32))
+        self.shadow_mesh.draw()
+
         model = np.eye(4, dtype=np.float32)
         model[:3, :3] = R.astype(np.float32)
         model[:3, 3] = self.craft.pos.astype(np.float32)
@@ -582,7 +593,7 @@ class SkyFlightApp:
   【偏航】E = 右舵               Q = 左舵
   【油门】Shift = 加大           Ctrl = 减小
   【快速】Z = 油门加满           X = 油门收光
-  【系统】F = 襟翼    B = 刹车    C = 切视角
+  【系统】F = 襟翼    B = 刹车/减速板    C = 切视角
           M = 鼠标操纵    P = 暂停
           R = 重来（回跑道）
           F11 或 Alt+回车 = 全屏 / 退出全屏
@@ -592,6 +603,8 @@ class SkyFlightApp:
           → 俯仰到 12~15° 时松杆 → 飞机会自己离地
   【平飞】松杆就行，飞机会自动配平；需要调节时轻点 S / W
   【转弯】按住 D 或 A，最多约 60° 倾角；松杆 2 秒自动回正
+  【减速】按住 B 打开减速板（空中也管用）；配合 F 放襟翼减得更快
+  【加速】俯冲（推杆 W）会掉高度但速度涨；要收速度就拉平 + 开减速板
   【降落】对准跑道 → 油门收到 20% → F 放襟翼 → 轻拉杆让下降率变缓
   【告警】屏幕下方出现 STALL 表示失速，立刻推杆（W）并加油门
 --------------------------------------------------------------------

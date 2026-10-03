@@ -44,6 +44,7 @@ class Aircraft:
     stall_angle = math.radians(16.0)
     CD0 = 0.030
     k_induced = 0.048
+    airbrake_drag = 0.075       # 减速板全开时额外增加的阻力系数
     CY_beta = -0.95          # 侧滑侧力
 
     # 惯性矩
@@ -98,6 +99,7 @@ class Aircraft:
         self.aileron = 0.0
         self.rudder = 0.0
         self.flaps = 0.0
+        self.airbrake = 0.0          # 减速板 0~1
 
         self.on_ground = False
         self.crashed = False
@@ -158,6 +160,8 @@ class Aircraft:
         self.aileron += (controls.get('roll', 0.0) - self.aileron) * k
         self.rudder += (controls.get('yaw', 0.0) - self.rudder) * k
         self.flaps += (controls.get('flaps', self.flaps) - self.flaps) * min(1.0, 2.5 * dt)
+        # 减速板开合稍慢一点，手感更像真的
+        self.airbrake += (controls.get('airbrake', self.airbrake) - self.airbrake) * min(1.0, 3.0 * dt)
 
         want = controls.get('throttle', None)
         if want is not None:
@@ -180,7 +184,10 @@ class Aircraft:
         else:
             self.stalling = False
         CL = max(-1.7, min(1.7, CL))
+        # 阻力：寄生 + 诱导 + 襟翼 + 减速板
+        # airbrake 是独立操作的减速板，空中按 B 打开，能明显减速
         CD = self.CD0 + self.k_induced * CL * CL + abs(self.flaps) * 0.045
+        CD += abs(self.airbrake) * self.airbrake_drag
         CD += abs(self.elevator) * 0.0035
 
         # 升阻比（供配平使用）
@@ -421,6 +428,8 @@ class Controls:
         self.roll = max(-1.0, min(1.0, r))
         self.yaw = max(-1.0, min(1.0, yaw))
         self.brakes = 1.0 if keys.get('B') else 0.0
+        # B 键：地面上是轮刹，空中是减速板（同一个键，两套用法）
+        self.airbrake = 1.0 if keys.get('B') else 0.0
         return self
 
     def as_dict(self, throttle=None, throttle_delta=0.0):
@@ -430,6 +439,7 @@ class Controls:
             'yaw': self.yaw,
             'flaps': self.flaps,
             'brakes': self.brakes,
+            'airbrake': self.airbrake,
         }
         if throttle is not None:
             d['throttle'] = throttle
