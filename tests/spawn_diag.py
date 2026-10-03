@@ -25,7 +25,7 @@ class Cap:
 orig = gfx.Mesh
 gfx.Mesh = Cap
 try:
-    plane.build_plane()
+    plane.build_plane()[0]
 finally:
     gfx.Mesh = orig
 

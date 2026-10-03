@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 
-from skyflight import gfx, shaders, terrain, flight, plane, scenery
+from skyflight import gfx, shaders, terrain, flight, plane, scenery, specs
 
 ok = True
 
@@ -153,13 +153,15 @@ check('起飞能力', t_takeoff)
 # ---------- 6) 几何
 def t_mesh_build():
     # 这里只验证顶点数据，不需要 GL 上下文，所以临时替换 gfx.Mesh
-    def capture(builder):
-        saved = {}
+    def capture_all(builder):
+        """返回本次构建里每个网格的顶点数组（顺序对应创建的先后）"""
+        saved = []
 
         class _Capture:
             def __init__(self, vertices, indices=None):
-                saved['v'] = np.asarray(vertices, dtype=np.float32).reshape(-1, 9)
-                self.count = saved['v'].shape[0]
+                a = np.asarray(vertices, dtype=np.float32).reshape(-1, 9)
+                saved.append(a)
+                self.count = a.shape[0]
 
         orig = gfx.Mesh
         gfx.Mesh = _Capture
@@ -167,16 +169,38 @@ def t_mesh_build():
             builder()
         finally:
             gfx.Mesh = orig
-        return saved['v']
+        return saved
 
-    v = capture(plane.build_plane)
-    print('     飞机顶点 %d 个 (三角形 %d)' % (v.shape[0], v.shape[0] // 3))
-    assert v.shape[0] > 300, '飞机顶点太少: %d' % v.shape[0]
-    span = float(v[:, 0].max() - v[:, 0].min())
-    length = float(v[:, 2].max() - v[:, 2].min())
-    print('     翼展 %.2f m，机长 %.2f m' % (span, length))
-    assert 8.0 < span < 14.0, '翼展不合理: %.2f' % span
-    assert 6.0 < length < 13.0, '机长不合理: %.2f' % length
+    def capture(builder):
+        """只取第一个网格（兼容老写法）"""
+        return capture_all(builder)[0]
+
+    # 三种机型都检查：返回 [机身, 起落架] 两个网格
+    # 注意用 capture 包起来 —— 真正的 build_plane 会创建 GL 网格，需要上下文
+    for sp in specs.CATALOG:
+        meshes = capture_all(lambda k=sp.key: plane.build_plane(k))
+        assert len(meshes) == 2, '%s 应该返回 (机身, 起落架) 两个网格' % sp.key
+        v, gv = meshes[0], meshes[1]
+        print('     [%s] %s 机身顶点 %d 个，起落架 %d 个' % (
+            sp.key, sp.name, v.shape[0], gv.shape[0]))
+        assert v.shape[0] > 300, '%s 机身顶点太少: %d' % (sp.key, v.shape[0])
+        span = float(v[:, 0].max() - v[:, 0].min())
+        length = float(v[:, 2].max() - v[:, 2].min())
+        print('           翼展 %.2f m（配置 %.1f），机长 %.2f m（配置 %.1f）' % (
+            span, sp.wing_span, length, sp.fuse_len))
+        assert abs(span - sp.wing_span) < 2.0, '%s 翼展不对: %.2f' % (sp.key, span)
+        assert abs(length - sp.fuse_len) < 3.0, '%s 机长不对: %.2f' % (sp.key, length)
+        assert gv.shape[0] >= 60, '%s 起落架顶点太少: %d' % (sp.key, gv.shape[0])
+        # 起落架最低点必须和 specs 里声明的 gear_height 一致
+        gmin = float(gv[:, 1].min())
+        print('           起落架最低点 y=%+.2f（配置 -%.2f）' % (gmin, sp.gear_height))
+        assert abs(gmin + sp.gear_height) < 0.06, (
+            '%s 起落架高度和 specs 不一致：模型 %.2f vs 配置 %.2f'
+            % (sp.key, gmin, sp.gear_height))
+        sh = capture(lambda k=sp.key: plane.build_shadow(k))
+        assert sh.shape[0] >= 36, '%s 阴影顶点太少' % sp.key
+
+    v = capture(lambda: plane.build_plane('trainer')[0])
     for name, fn in (('跑道', plane.build_runway), ('塔台', plane.build_tower),
                      ('机库', plane.build_hangar)):
         w = capture(fn)
@@ -213,7 +237,7 @@ def t_gl():
     wat = gfx.Shader(shaders.INST_VS, shaders.WATER_FS, 'water')
     print('     五个着色器全部编译通过（天空/物体/地形/实例化/水面）')
 
-    pm = plane.build_plane()
+    pm = plane.build_plane()[0]
     rm = plane.build_runway()
     tm = plane.build_tower()
     tp = terrain.Terrain()

@@ -350,8 +350,30 @@ def draw_hud(hud, shader, craft, screen_w, screen_h, fps=0.0):
     # ---------------- 右上：FPS
     hud.text('FPS %d' % int(fps), screen_w - pad - 100, pad + 4, 17, DIM)
 
-    # ---------------- 左上角：游戏名 + 版本号（空白区，不会被切）
+    # ---------------- 左上角：游戏名 + 版本号 + 机型（空白区，不会被切）
     hud.text('SKYFLIGHT', pad + 2, pad + 2, 20, WHITE)
     hud.text('V%s' % VERSION, pad + 2, pad + 28, 16, DIM)
+    sp = getattr(craft, 'spec', None)
+    if sp is not None:
+        name = sp.name_en.upper()
+        hud.text(name, pad + 62, pad + 28, 16,
+                 CYAN if sp.kind == 'jet' else DIM)
+
+    # ---------------- 机型/起落架状态（在罗盘下方左侧）
+    if sp is not None:
+        iy = pad + 118
+        if sp.gear_retract:
+            g = craft.gear
+            if g > 0.99:
+                gt, gc = 'GEAR DOWN', GREEN
+            elif g < 0.01:
+                gt, gc = 'GEAR UP', DIM
+            else:
+                gt, gc = 'GEAR %d%%' % int(g * 100), AMBER
+            hud.text(gt, pad + 2, iy, 16, gc)
+        else:
+            hud.text('GEAR FIXED', pad + 2, iy, 16, DIM)
+        if sp.kind == 'jet':
+            hud.text('JET', pad + 2, iy + 20, 16, DIM)
 
     hud.commit(screen_w, screen_h, shader)

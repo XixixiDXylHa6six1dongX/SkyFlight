@@ -11,7 +11,7 @@ import glfw
 import numpy as np
 from OpenGL import GL
 
-from . import gfx, shaders, sky, terrain, flight, plane, scenery, hud as hudmod
+from . import gfx, shaders, sky, terrain, flight, plane, scenery, specs, hud as hudmod
 from .version import VERSION, BUILD_DATE
 
 
@@ -39,8 +39,9 @@ def spawn_position():
     """返回出生位置：轮胎正好落在跑道面上"""
     x, _, z = RUNWAY_START
     ground = ground_at(x, z)
-    # 飞机模型最低点（轮胎底）在局部坐标 -1.07，所以机身原点 = 地面 + 1.07
-    return np.array([x, ground + WHEEL_DROP, z], dtype=np.float64)
+    # 飞机模型最低点（轮胎底）在局部坐标 -gear_height，所以机身原点 = 地面 + gear_height
+    sp = specs.DEFAULT
+    return np.array([x, ground + sp.gear_height, z], dtype=np.float64)
 
 # ---------------------------------------------------------------- 按键名表
 # 注意：glfw.get_key_name() 对方向键、Shift、Ctrl、Esc 等"特殊键"返回 None，
@@ -143,24 +144,18 @@ class Camera:
 
 # ---------------------------------------------------------------- 主程序
 class SkyFlightApp:
-    def __init__(self):
+    def __init__(self, aircraft_key=None):
         self.window = None
         self.keys = {}
         self.mouse = {'dx': 0.0, 'dy': 0.0, 'x': 0.0, 'y': 0.0, 'left': False, 'right': False}
-        self.craft = flight.Aircraft()
+        self.aircraft_key = aircraft_key or specs.DEFAULT.key
+        self.craft = flight.Aircraft(aircraft_key=self.aircraft_key)
         self.camera = Camera()
         # 出生在跑道上（停住，需要自己加油门滑跑起飞）
         if SPAWN_ON_RUNWAY:
-            p0 = spawn_position()
-            self.craft.pos = p0.copy()
-            self.craft.vel = np.zeros(3)
-            self.craft.speed_val = 0.0
-            self.craft.pitch = 0.0
-            self.craft.on_ground = True
-            self.camera.pos = p0 + np.array([0.0, 6.0, 30.0])
-            self.camera.target = p0 + np.array([0.0, 1.0, -20.0])
-            self.camera.smooth = self.camera.pos.copy()
+            self._place_on_runway()
         self.controls = flight.Controls()
+        self.gear_key_prev = False
         self.time = 0.0
         self.paused = False
         self.show_help = True
@@ -171,6 +166,7 @@ class SkyFlightApp:
         self.title_timer = 0.0
         self.terrain_patch = None
         self.plane_mesh = None
+        self.gear_mesh = None
         self.runway_mesh = None
         self.tower_mesh = None
         self.sky_shader = None
@@ -188,6 +184,56 @@ class SkyFlightApp:
         self.window_rect = None      # 进全屏前的窗口位置和大小
         # 启动时可加 --fullscreen 直接全屏
         self.start_fullscreen = '--fullscreen' in sys.argv or '-f' in sys.argv
+        # 启动时可加 --aircraft=jet_light 直接选机型
+        for a in sys.argv[1:]:
+            if a.startswith('--aircraft='):
+                self.aircraft_key = specs.get(a.split('=', 1)[1]).key
+                self.craft = flight.Aircraft(aircraft_key=self.aircraft_key)
+                if SPAWN_ON_RUNWAY:
+                    self._place_on_runway()
+
+    # ------------------------------------------------ 机型 / 停机
+    def _place_on_runway(self):
+        """把飞机放到跑道上，并按当前机型的起落架高度确定停机高度"""
+        sp = self.craft.spec
+        x, _, z = RUNWAY_START
+        ground = ground_at(x, z)
+        p0 = np.array([x, ground + sp.gear_height, z], dtype=np.float64)
+        c = self.craft
+        c.pos = p0.copy()
+        c.pitch = c.roll = c.yaw = 0.0
+        c.p = c.q = c.r = 0.0
+        c.alpha = math.radians(2.0)
+        c.aoa_deg = 2.0
+        c.stalling = False
+        c.crashed = False
+        c.crash_timer = 0.0
+        c.gear = 1.0            # 停机时一定放下
+        c.gear_up_locked = False
+        c.gear_down_locked = False
+        c.on_ground = True
+        c.vel = np.zeros(3)
+        c.speed_val = 0.0
+        c.throttle = 0.0
+        self.camera.pos = p0 + np.array([0.0, 6.0, 30.0])
+        self.camera.target = p0 + np.array([0.0, 1.0, -20.0])
+        self.camera.smooth = self.camera.pos.copy()
+        return p0
+
+    def set_aircraft(self, key):
+        """换机型：重建模型和飞行参数，回到跑道上"""
+        if key == self.aircraft_key:
+            return
+        self.aircraft_key = key
+        self.craft = flight.Aircraft(aircraft_key=key)
+        self.plane_mesh, self.gear_mesh = plane.build_plane(key)
+        self.shadow_mesh = plane.build_shadow(key)
+        self._place_on_runway()
+        print('  [机型] 已切换到 %s  (%s)' % (
+            self.craft.spec.name, self.craft.spec.name_en))
+
+    def next_aircraft(self):
+        self.set_aircraft(specs.next_key(self.aircraft_key))
 
     # ------------------------------------------------ 初始化
     def init_gl(self):
@@ -230,8 +276,8 @@ class SkyFlightApp:
         self.show_hud = True
         self.show_scenery = True
 
-        self.plane_mesh = plane.build_plane()
-        self.shadow_mesh = plane.build_shadow()
+        self.plane_mesh, self.gear_mesh = plane.build_plane(self.aircraft_key)
+        self.shadow_mesh = plane.build_shadow(self.aircraft_key)
         self.runway_mesh = plane.build_runway()
         self.tower_mesh = plane.build_tower()
         # 双层地形：近处细、远处大范围
@@ -306,17 +352,18 @@ class SkyFlightApp:
             return
         if n == 'C':
             self.camera.mode = (self.camera.mode + 1) % 3
+        elif n == 'V':
+            # 换机型
+            self.next_aircraft()
+        elif n == 'G':
+            # 收起落架 / 放起落架（安全检查放在 Aircraft.toggle_gear 里）
+            accepted, msg = self.craft.toggle_gear()
+            print('  [起落架] %s' % msg)
         elif n == 'R':
             # 重来：回到跑道起点，停住
             if SPAWN_ON_RUNWAY:
-                p0 = spawn_position()
-                self.craft.reset(tuple(p0))
-                self.craft.vel = np.zeros(3)
-                self.craft.speed_val = 0.0
-                self.craft.on_ground = True
-                self.throttle_cmd = 0.0
+                self._place_on_runway()
                 self.controls.flaps = 0.0
-                self.camera.smooth = p0 + np.array([0.0, 6.0, 30.0])
             else:
                 self.craft.reset((0.0, 120.0, 900.0))
                 self.camera.smooth = self.craft.pos + np.array([0.0, 15.0, 16.0])
@@ -522,6 +569,23 @@ class SkyFlightApp:
         self.obj_shader.set_mat3('uNormalMat', model[:3, :3].astype(np.float32))
         self.plane_mesh.draw()
 
+        # 起落架：单独一个网格，收起时缩进机身（而不是突然消失）
+        gear = self.craft.gear
+        if gear > 0.02:
+            g = max(0.02, gear)
+            gz = 0.30 + 0.70 * gear          # 收起时朝机身内部缩
+            gy = -0.55 * (1.0 - gear)        # 略微上收
+            gear_local = np.array([
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, g, 0.0, gy],
+                [0.0, 0.0, 1.0, gz],
+                [0.0, 0.0, 0.0, 1.0],
+            ], dtype=np.float32)
+            gm = model @ gear_local
+            self.obj_shader.set_mat4('uModel', gm)
+            self.obj_shader.set_mat3('uNormalMat', gm[:3, :3].astype(np.float32))
+            self.gear_mesh.draw()
+
         # ---------- 仪表盘叠加层
         if self.show_hud:
             try:
@@ -581,10 +645,16 @@ class SkyFlightApp:
         if self.fullscreen:
             flag += '  [全屏 F11 退出]'
         head = math.degrees(c.yaw) % 360.0
-        return ('%s v%s  |  %s  |  航向 %03d°  |  速度 %.0f km/h  |  高度 %.0f m  |  '
-                '倾角 %+.0f°  |  油门 %.0f%%  |  FPS %.0f%s'
-                % (APP_NAME, VERSION, mode, int(head), c.airspeed_kmh, c.altitude,
-                   math.degrees(c.roll), c.throttle * 100.0, self.fps, flag))
+        gear = ''
+        if c.spec.gear_retract:
+            gear = '  |  起落架 %s' % (
+                '放下' if c.gear > 0.99 else ('收起' if c.gear < 0.01
+                                          else '%d%%' % int(c.gear * 100)))
+        return ('%s v%s  [%s]  |  %s  |  航向 %03d°  |  速度 %.0f km/h  |  高度 %.0f m  |  '
+                '倾角 %+.0f°  |  油门 %.0f%%%s  |  FPS %.0f%s'
+                % (APP_NAME, VERSION, c.spec.name, mode, int(head),
+                   c.airspeed_kmh, c.altitude,
+                   math.degrees(c.roll), c.throttle * 100.0, gear, self.fps, flag))
     def help_text(self):
         return """操作说明
 --------------------------------------------------------------------
@@ -594,6 +664,8 @@ class SkyFlightApp:
   【油门】Shift = 加大           Ctrl = 减小
   【快速】Z = 油门加满           X = 油门收光
   【系统】F = 襟翼    B = 刹车/减速板    C = 切视角
+          G = 收起落架 / 放起落架（喷气机用）
+          V = 换机型（螺旋桨教练机 → 轻型涡喷 → 双发涡喷）
           M = 鼠标操纵    P = 暂停
           R = 重来（回跑道）
           F11 或 Alt+回车 = 全屏 / 退出全屏
@@ -601,12 +673,21 @@ class SkyFlightApp:
 --------------------------------------------------------------------
   【起飞】按 Z 加满油门 → 速度到约 100 km/h → 按住 S 抬前轮
           → 俯仰到 12~15° 时松杆 → 飞机会自己离地
+          （喷气机推力大，抬前轮更快，注意别拉太猛）
   【平飞】松杆就行，飞机会自动配平；需要调节时轻点 S / W
   【转弯】按住 D 或 A，最多约 60° 倾角；松杆 2 秒自动回正
+  【起落架】离地后按 G 收起落架，速度能快一截、也更省油；
+          降落前务必再按 G 放下来（没放下就接地会擦地）
   【减速】按住 B 打开减速板（空中也管用）；配合 F 放襟翼减得更快
   【加速】俯冲（推杆 W）会掉高度但速度涨；要收速度就拉平 + 开减速板
-  【降落】对准跑道 → 油门收到 20% → F 放襟翼 → 轻拉杆让下降率变缓
+  【降落】对准跑道 → 油门收到 20% → F 放襟翼 → 按 G 放起落架
+          → 轻拉杆让下降率变缓
   【告警】屏幕下方出现 STALL 表示失速，立刻推杆（W）并加油门
+--------------------------------------------------------------------
+  三种机型（按 V 切换）：
+    螺旋桨教练机  低速好飞，固定起落架，适合练手
+    轻型涡喷      单发，可收起落架，爬升和加速都快
+    双发涡喷      机身重、翼载高，速度快但转弯半径大
 --------------------------------------------------------------------
   在"环绕"视角下（按 C 切换到第 3 个），按住鼠标右键拖动可转视角
 """

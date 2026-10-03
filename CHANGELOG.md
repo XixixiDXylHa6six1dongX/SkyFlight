@@ -1,5 +1,55 @@
 # Changelog
 
+## v1.4.0 — 2026-10-03
+
+### Added
+
+- **Three aircraft, one of them piston and two turbojets.** Press **V** to cycle:
+
+  | Aircraft | Engine | Span | Mass | Thrust | Stall | Gear |
+  |---|---|---|---|---|---|---|
+  | Prop Trainer 螺旋桨教练机 | piston, 3-blade prop | 11.0 m | 1100 kg | 3.6 kN | 16° | fixed |
+  | Light Jet 轻型涡喷教练机 | single turbojet, side intakes, exhaust nozzle | 10.7 m | 3200 kg | 16.5 kN | 15° | retractable |
+  | Twin Jet 双发涡喷公务机 | two podded turbojets, T-tail | 15.6 m | 9800 kg | 48.0 kN | 16° | retractable |
+
+  Each has its own mass, wing area, thrust, drag, stall angle, control
+  authority and landing-gear height. Switching aircraft resets you to the
+  runway with the correct sit height for that airframe.
+
+- **Retractable landing gear.** The two jets start with the gear down. Press
+  **G** after takeoff to raise it; **G** again before landing. Retraction takes
+  about 1.8 s and is animated — the gear scales and tucks into the fuselage.
+  - Drag changes with gear position: at the same throttle the light jet gains
+    **+164 km/h** and the twin jet **+204 km/h** when the gear comes up.
+  - The prop trainer's gear is fixed and refuses to retract.
+  - The gear cannot be raised on the ground or below 15 km/h.
+  - The instrument panel shows `GEAR DOWN` / `GEAR UP` / `GEAR nn%`.
+
+- `--aircraft=jet_light` command-line option to start in a chosen aircraft.
+- `tests/aircraft_check.py`: geometry, performance, per-type test flight,
+  gear retraction and gear-drag checks.
+
+### Fixed
+
+- **Jets could be rolled onto their side.** The roll controller was purely
+  proportional with no bank limit, so an aircraft with strong roll authority
+  (the light jet) would keep rolling past 90° into knife-edge flight. Roll is
+  now commanded as a target bank angle (58° at full stick) with a hard angle
+  clamp, on top of the existing self-levelling. All three aircraft now hold
+  about 63° and can no longer be flipped.
+- **Aircraft geometry no longer disagrees with its specification.** The test
+  suite measures every model against `specs.py` and fails on any mismatch
+  (wing span, length, and the gear bottom relative to the declared sit height).
+
+### Verified
+
+- 10/10 flight-physics checks · 4/4 end-to-end flight sequence · aircraft
+  check (geometry, performance, per-type flight, gear) · smoke test · key
+  bindings · fullscreen/version/compass · spawn and gear height for all three
+  types.
+
+---
+
 ## v1.3.0 — 2026-10-03
 
 ### Fixed

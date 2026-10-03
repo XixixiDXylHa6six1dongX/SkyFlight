@@ -26,6 +26,7 @@ import math
 import numpy as np
 
 from . import gfx
+from . import specs
 
 
 class Aircraft:
@@ -45,6 +46,8 @@ class Aircraft:
     CD0 = 0.030
     k_induced = 0.048
     airbrake_drag = 0.075       # 减速板全开时额外增加的阻力系数
+    gear_drag = 0.022           # 起落架放下时的额外阻力系数
+    gear_rate = 0.55            # 起落架收放速度（每秒变化量，约 1.8 秒走完）
     CY_beta = -0.95          # 侧滑侧力
 
     # 惯性矩
@@ -64,6 +67,7 @@ class Aircraft:
     gamma_limit = math.radians(42.0)     # 爬升角超过此值限制抬头
     # ---- 滚转 / 偏航
     roll_rate_cmd = 1.15      # 杆满偏 -> 期望滚转角速度 rad/s（约 66°/s）
+    max_bank_deg = 58.0       # 满杆能达到的最大倾角（所有机型都压不过它）
     roll_stiff = 5200.0       # 滚转跟踪 -> 力矩
     yaw_stiff = 2600.0        # 偏航跟踪 -> 力矩
 
@@ -77,13 +81,37 @@ class Aircraft:
     weathercock = 2.8        # 风标效应
     dihedral = 2.2           # 上反角效应
 
-    # 起落架高度（机身原点离地）。模型最低点（轮胎底）在局部坐标 -1.07，
-    # 所以轮胎着地时机身原点离地 1.07 m。改模型尺寸要同步改这里。
+    # 起落架高度（机身原点离地）会按机型在 __init__ 里覆盖。
+    # 模型最低点（轮胎底）在局部坐标 -gear_height，
+    # 所以轮胎着地时机身原点离地 gear_height 米。改模型尺寸要同步改 specs.py。
     GEAR_HEIGHT = 1.07
 
-    def __init__(self, pos=(0.0, 60.0, 1200.0)):
+    def __init__(self, pos=(0.0, 60.0, 1200.0), spec=None, aircraft_key=None):
+        # ---------------- 机型参数（换机型就是换这一整组）
+        if spec is None:
+            spec = specs.get(aircraft_key) if aircraft_key else specs.DEFAULT
+        self.spec = spec
+        self.aircraft_key = spec.key
+        self.mass = spec.mass
+        self.wing_area = spec.wing_area
+        self.max_thrust = spec.max_thrust
+        self.V_ref = spec.V_ref
+        self.cruise_speed = spec.cruise_speed
+        self.CL0 = spec.CL0
+        self.CL_alpha = spec.CL_alpha
+        self.CL_max = spec.CL_max
+        self.stall_angle = math.radians(spec.stall_deg)
+        self.CD0 = spec.CD0
+        self.k_induced = spec.k_induced
+        self.roll_power = spec.roll_power
+        self.pitch_power = spec.pitch_power
+        self.yaw_power = spec.yaw_power
+        self.roll_rate_cmd = spec.roll_rate_cmd
+        self.thrust_lapse_max = spec.thrust_lapse
+        self.GEAR_HEIGHT = spec.gear_height
+
         self.pos = np.array(pos, dtype=np.float64)
-        self.vel = np.array([0.0, 0.0, -78.0], dtype=np.float64)
+        self.vel = np.array([0.0, 0.0, -self.cruise_speed], dtype=np.float64)
         self.speed_val = float(np.linalg.norm(self.vel))
         if self.speed_val < 0.1:
             self.speed_val = 0.0
@@ -101,6 +129,13 @@ class Aircraft:
         self.flaps = 0.0
         self.airbrake = 0.0          # 减速板 0~1
 
+        # ---------------- 起落架
+        # gear  = 1.0 放下（可着陆）/ 0.0 收起（减阻提速）
+        # 螺旋桨教练机是固定式，永远 1.0
+        self.gear = 1.0 if not spec.gear_retract else 0.0
+        self.gear_up_locked = False
+        self.gear_down_locked = False
+
         self.on_ground = False
         self.crashed = False
         self.crash_timer = 0.0
@@ -111,6 +146,45 @@ class Aircraft:
         self.g_load = 1.0
         self.last_acc = np.zeros(3)
         self.gamma = 0.0
+
+    # ------------------------------------------------ 机型
+    def set_aircraft(self, key):
+        """换机型（会重置到该机型的初始状态）"""
+        self.__init__(pos=tuple(self.pos), aircraft_key=key)
+
+    @property
+    def gear_retractable(self):
+        return bool(self.spec.gear_retract)
+
+    @property
+    def gear_deployed(self):
+        """起落架是否算"放下"（放下度 > 0.99）"""
+        return self.gear > 0.99
+
+    def toggle_gear(self):
+        """按 G：收起落架 / 放起落架
+
+        返回 (是否接受, 说明)。只有能安全动作时才执行：
+          - 固定式起落架：不接受
+          - 地面上要收起：不接受（收起会擦地）
+          - 空速低于 8 m/s 要收起：不接受
+        要"放下"则任何时候都允许（进近时可能速度很低，但必须放得下来）。
+        """
+        if not self.spec.gear_retract:
+            return False, '固定式起落架，不能收放'
+        want_up = self.gear > 0.5
+        if want_up:
+            if self.on_ground:
+                return False, '地面上不能收起落架'
+            if self.speed_val < 8.0:
+                return False, '速度太低（<29 km/h），不能收起落架'
+            self.gear_up_locked = True
+            self.gear_down_locked = False
+            return True, '正在收起起落架'
+        self.gear_down_locked = True
+        self.gear_up_locked = False
+        return True, '正在放下起落架'
+
 
     # ------------------------------------------------ 坐标变换
     def basis(self):
@@ -163,6 +237,19 @@ class Aircraft:
         # 减速板开合稍慢一点，手感更像真的
         self.airbrake += (controls.get('airbrake', self.airbrake) - self.airbrake) * min(1.0, 3.0 * dt)
 
+        # ---------------- 起落架收放
+        if self.spec.gear_retract:
+            # 空中没速度时收不起来；地面上压着收不起来
+            can_move = (not self.on_ground) and self.speed_val > 8.0
+            if self.gear_up_locked and can_move:
+                self.gear = max(0.0, self.gear - self.gear_rate * dt)
+            elif self.gear_down_locked:
+                self.gear = min(1.0, self.gear + self.gear_rate * dt)
+            else:
+                # 没指令时：离地且空速够 -> 自动收；进近/接地 -> 自动放
+                want_gear = 1.0 if (self.on_ground or self.speed_val < 55.0) else 0.0
+                self.gear += (want_gear - self.gear) * min(1.0, 0.5 * dt)
+
         want = controls.get('throttle', None)
         if want is not None:
             self.throttle = float(np.clip(want, 0.0, 1.0))
@@ -184,10 +271,12 @@ class Aircraft:
         else:
             self.stalling = False
         CL = max(-1.7, min(1.7, CL))
-        # 阻力：寄生 + 诱导 + 襟翼 + 减速板
+        # 阻力：寄生 + 诱导 + 襟翼 + 减速板 + 起落架
         # airbrake 是独立操作的减速板，空中按 B 打开，能明显减速
+        # gear 放下时也有可观阻力（真实飞机放下起落架通常掉 10~20 节）
         CD = self.CD0 + self.k_induced * CL * CL + abs(self.flaps) * 0.045
         CD += abs(self.airbrake) * self.airbrake_drag
+        CD += self.gear * self.gear_drag
         CD += abs(self.elevator) * 0.0035
 
         # 升阻比（供配平使用）
@@ -196,7 +285,7 @@ class Aircraft:
         n_ratio = lift_force / weight      # >1 表示升力大于重力
 
         # ---------------- 速度大小：推力 - 阻力 - 重力分量
-        thrust = self.throttle * self.max_thrust * (1.0 - 0.20 * min(1.0, max(0.0, self.pos[1]) / 9000.0))
+        thrust = self.throttle * self.max_thrust * (1.0 - self.thrust_lapse_max * min(1.0, max(0.0, self.pos[1]) / 9000.0))
         drag = CD * q_dyn * self.wing_area
         # 爬升时重力分量拉低速度
         gamma = math.asin(max(-1.0, min(1.0, self.vel[1] / V)))
@@ -247,33 +336,36 @@ class Aircraft:
         # ---------------- 滚转 / 偏航力矩
         # 约定：roll > 0 = 右翼下沉，所以右杆 -> 正滚转角速度
         #
-        # 滚转保护（两道）：
-        #  1) 上反角自稳：有倾角时始终有一个"想回平"的恢复力矩
-        #     （倾角越大越强，但大倾角时保留足够操纵力，让飞行员仍能压住）
-        #  2) 操纵权限随倾角衰减：超过 70° 后杆量被压制，防一杆翻过去
-        bank = abs(self.roll)
-        bank_deg = math.degrees(bank)
-        if bank_deg <= 30.0:
-            authority = 1.0
-            # 小倾角：松杆才自稳，压杆时保留完全操纵力
-            stab = 0.0 if abs(self.aileron) > 0.05 else 1.0
-        elif bank_deg <= 75.0:
-            authority = 1.0
-            stab = 1.0
+        # 操纵手感 = "压杆 -> 目标倾角"，而不是"压杆 -> 恒定滚转角速度"。
+        # 这样任何机型都压不过 max_bank（默认约 62°），
+        # 松杆则目标回 0，自然滚回水平。
+        # 之前是纯比例控制（没有倾角上限），滚转力强的喷气机会一路压到 90°
+        # 变成刀锋飞行——这就是"喷气机压杆会翻过去"的原因。
+        bank_deg = math.degrees(abs(self.roll))
+        max_bank = self.max_bank_deg
+        if abs(self.aileron) > 0.05:
+            # 压杆：目标倾角 = 满杆到 max_bank
+            bank_target = math.copysign(
+                max_bank * min(1.0, abs(self.aileron)), self.aileron)
         else:
-            # 超大倾角：杆量被压制，自稳加强
-            authority = max(0.25, 1.0 - (bank_deg - 75.0) / 60.0)
-            stab = 1.6
+            # 松杆：目标回平（上反角自稳）
+            bank_target = 0.0
+        # 超限时强制往回压（防止外力/过冲把飞机掀过去）
+        if bank_deg > max_bank + 6.0:
+            bank_target = math.copysign(
+                max_bank * 0.85, self.roll)
 
-        # 自稳恢复速率（rad/s），限幅避免过冲
-        p_recover = 0.0
-        if stab > 0.0:
-            p_recover = -math.copysign(min(abs(self.roll) * 1.1, 1.15), self.roll)
-            if abs(self.aileron) <= 0.05:
-                p_recover *= stab
+        # 目标倾角 -> 目标滚转角速度
+        # 只在"还没到目标倾角"时才往外压；接近目标时 p 归零（不越过），
+        # 这样机构不会在目标附近来回震荡。
+        k_bank = 2.2
+        err = bank_target - self.roll
+        p_cmd = err * k_bank
+        if (self.aileron > 0.05 and self.roll >= bank_target - 1e-4) or \
+           (self.aileron < -0.05 and self.roll <= bank_target + 1e-4):
+            p_cmd = 0.0
+        p_cmd = max(-self.roll_rate_cmd, min(self.roll_rate_cmd, p_cmd))
 
-        p_cmd = self.aileron * authority * self.roll_rate_cmd * min(1.0, V / 30.0)
-        p_cmd += p_recover * min(1.0, V / 40.0)
         M_roll = (p_cmd - self.p) * self.roll_stiff * eff
         M_roll = max(-self.Ixx * 6.0, min(self.Ixx * 6.0, M_roll))
         r_cmd = self.rudder * 0.9 * min(1.0, V / 30.0)
@@ -297,11 +389,16 @@ class Aircraft:
         self.pitch += self.q * dt
         self.roll += self.p * dt
         self.pitch = max(-1.45, min(1.45, self.pitch))
-        # 滚转超出 ±180° 后钳制（不让它一直转圈）
-        if self.roll > math.pi:
-            self.roll -= 2 * math.pi
-        elif self.roll < -math.pi:
-            self.roll += 2 * math.pi
+        # 滚转角硬限幅：任何机型都不允许翻过 max_bank + 8°。
+        # 这是最后一道保险——控制器再好也可能被扰动/过冲突破。
+        # 一旦撞到限幅就把滚转角速度清零，避免"贴边抖动"。
+        bank_cap = math.radians(self.max_bank_deg + 5.0)
+        if self.roll > bank_cap:
+            self.roll = bank_cap
+            self.p = min(0.0, self.p)
+        elif self.roll < -bank_cap:
+            self.roll = -bank_cap
+            self.p = max(0.0, self.p)
         if self.yaw > math.pi:
             self.yaw -= 2 * math.pi
         elif self.yaw < -math.pi:
@@ -397,6 +494,7 @@ class Controls:
         self.yaw = 0.0       # >0 右偏航
         self.flaps = 0.0
         self.brakes = 0.0
+        self.gear_toggle = False
         self.mouse_mode = False
         self.mx = 0.0
         self.my = 0.0
@@ -430,6 +528,8 @@ class Controls:
         self.brakes = 1.0 if keys.get('B') else 0.0
         # B 键：地面上是轮刹，空中是减速板（同一个键，两套用法）
         self.airbrake = 1.0 if keys.get('B') else 0.0
+        # G 键：收起落架 / 放起落架（只有可收放机型有效）
+        self.gear_toggle = bool(keys.get('G'))
         return self
 
     def as_dict(self, throttle=None, throttle_delta=0.0):

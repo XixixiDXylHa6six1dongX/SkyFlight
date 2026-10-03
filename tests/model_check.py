@@ -18,7 +18,7 @@ class FM:
 
 o = gfx.Mesh
 gfx.Mesh = FM
-plane.build_plane()
+plane.build_plane()[0]
 m = saved['v']
 gfx.Mesh = o
 
@@ -58,7 +58,7 @@ glfw.make_context_current(win)
 GL.glEnable(GL.GL_DEPTH_TEST)
 GL.glEnable(GL.GL_CULL_FACE)
 sh = gfx.Shader(shaders.OBJ_VS, shaders.OBJ_FS, 'obj')
-mesh = plane.build_plane()
+mesh = plane.build_plane()[0]
 
 
 def ortho(l, r, b, t, n, f):

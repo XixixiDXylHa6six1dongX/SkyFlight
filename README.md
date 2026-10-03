@@ -1,11 +1,10 @@
-# SkyFlight v1.3.0
+# SkyFlight v1.4.0
 
 Run `启动飞行模拟器.bat`
 
 **S/W** nose up/down · **A/D** bank left/right · **Shift/Ctrl** throttle ·
-**Z** full · **F** flaps · **B** brake/airbrake · **C** camera ·
-**F11** fullscreen · **R** restart · **H** help · **Esc** quit
+**Z** full · **F** flaps · **B** brake · **G** gear · **V** aircraft ·
+**C** camera · **F11** fullscreen · **R** restart · **H** help · **Esc** quit
 
-Take off: **Z**, reach 100 km/h, hold **S**.
-Slow down: hold **B**.
-Top compass = heading.
+Aircraft: prop trainer, light jet, twin jet.
+Takeoff: **Z**, 100 km/h, hold **S**. Gear up: **G**.

@@ -30,7 +30,7 @@ def colored_plane():
     orig = gfx.Mesh
     gfx.Mesh = Cap
     try:
-        plane.build_plane()
+        plane.build_plane()[0]
     finally:
         gfx.Mesh = orig
     V = np.concatenate(saved, axis=0).copy()
