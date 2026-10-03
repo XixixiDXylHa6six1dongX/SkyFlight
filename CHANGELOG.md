@@ -1,5 +1,47 @@
 # Changelog
 
+## v1.5.1 — 2026-10-03
+
+### Fixed
+
+- **The aircraft looked like it was sunk into the runway.** The runway's white
+  centre line, edge lines and threshold numbers were built as **raised boxes** —
+  60 mm thick with their centres at `RUNWAY_TOP + 0.02`, so their top surface sat
+  at **y = 0.310**. The tyres rest at **y = 0.240**, i.e. **70 mm below the
+  paint**, so the wheels were buried in the markings. The markings are now thin
+  sheets sitting 5 mm proud of the asphalt, drawn as a separate mesh, so they no
+  longer swallow the wheels (the 5 mm lift also removes z-fighting against the
+  asphalt). The runway lights beside the strip also reached y = 1.025, which made
+  the same problem worse when parking next to them.
+
+- **Spawn leaves a visible gap, then settles.** `app.SPAWN_CLEARANCE = 0.25 m`
+  puts the wheels 25 cm above the runway at spawn so you can see daylight under
+  them; the aircraft settles onto the surface 0.63 s later at about 0.9 m/s —
+  far below the 19 m/s crash threshold, so it never damages the aircraft. Three
+  separate bugs had to be fixed for that to work:
+
+  1. `_place_on_runway` set `on_ground = True`. The ground-snap code only runs
+     when airborne, so the aircraft would have hovered 25 cm up indefinitely.
+  2. Once airborne, the ground branch clamps the flight-path angle to
+     −0.02..+4°, which pins vertical speed at ~0 — so it still would not
+     descend. It now gets an explicit gentle descent while above the surface.
+  3. That descent has to change `speed_val`, not just `vel[1]`, because the
+     velocity vector is recomputed from `speed_val * sin(gamma)` every frame
+     (changing `vel[1]` alone was overwritten on the next frame).
+
+  `surface_height()` now returns the top of the paint rather than the asphalt,
+  so the resting height matches what is actually drawn.
+
+### Verified
+
+New `tests/spawn_fit.py` asserts, for all three aircraft: no runway mesh part
+sits above `RUNWAY_PAINT_TOP`, runway lights are outside the strip, the aircraft
+spawns above the surface, settles onto it to within 1 cm, and never sinks below
+it while taxiing. `tests/spawn_check.py` now checks the spawn gap **and** the
+settled contact. Full suite still green.
+
+---
+
 ## v1.5.0 — 2026-10-03
 
 ### Added

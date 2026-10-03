@@ -30,19 +30,29 @@ WHEEL_DROP = 1.07
 SPAWN_ON_RUNWAY = True
 RUNWAY_START = (0.0, 0.0, 560.0)
 
+# 出生时给轮胎留的离地间隙（米）。
+# 停机时轮胎底 = 地面高度 + 这个值，所以飞机是"停在跑道面之上一点点"，
+# 一眼能看出轮胎和跑道之间有缝，不会像陷进地里。
+SPAWN_CLEARANCE = 0.25
+
 
 def ground_at(x, z):
-    """飞机能落脚的地面高度（含跑道面）"""
+    """飞机能落脚的地面高度（含跑道面和上面的标线）"""
     return plane.surface_height(x, z, terrain.height_at(x, z))
 
 
-def spawn_position():
-    """返回出生位置：轮胎正好落在跑道面上"""
+def spawn_position(spec=None):
+    """返回出生位置：轮胎底 = 地面 + SPAWN_CLEARANCE
+
+    注意不要再写"地面 + gear_height"这种刚好贴地的算法 ——
+    刚好贴地时轮胎会插进跑道标线（标线是凸起的），看着就是陷进地里。
+    """
     x, _, z = RUNWAY_START
+    sp = spec if spec is not None else specs.DEFAULT
     ground = ground_at(x, z)
-    # 飞机模型最低点（轮胎底）在局部坐标 -gear_height，所以机身原点 = 地面 + gear_height
-    sp = specs.DEFAULT
-    return np.array([x, ground + sp.gear_height, z], dtype=np.float64)
+    # 模型最低点（轮胎底）在局部坐标 -gear_height，所以机身原点 = 轮胎底 + gear_height
+    wheel_bottom = ground + SPAWN_CLEARANCE
+    return np.array([x, wheel_bottom + sp.gear_height, z], dtype=np.float64)
 
 # ---------------------------------------------------------------- 按键名表
 # 注意：glfw.get_key_name() 对方向键、Shift、Ctrl、Esc 等"特殊键"返回 None，
@@ -169,6 +179,7 @@ class SkyFlightApp:
         self.plane_mesh = None
         self.gear_mesh = None
         self.runway_mesh = None
+        self.runway_paint_mesh = None
         self.tower_mesh = None
         self.sky_shader = None
         self.obj_shader = None
@@ -195,11 +206,15 @@ class SkyFlightApp:
 
     # ------------------------------------------------ 机型 / 停机
     def _place_on_runway(self):
-        """把飞机放到跑道上，并按当前机型的起落架高度确定停机高度"""
+        """把飞机放到跑道上，并按当前机型的起落架高度确定停机高度
+
+        轮胎底 = 地面 + SPAWN_CLEARANCE（留一点离地间隙，不插进标线里）
+        """
         sp = self.craft.spec
         x, _, z = RUNWAY_START
         ground = ground_at(x, z)
-        p0 = np.array([x, ground + sp.gear_height, z], dtype=np.float64)
+        p0 = np.array([x, ground + SPAWN_CLEARANCE + sp.gear_height, z],
+                      dtype=np.float64)
         c = self.craft
         c.pos = p0.copy()
         c.pitch = c.roll = c.yaw = 0.0
@@ -212,10 +227,19 @@ class SkyFlightApp:
         c.gear = 1.0            # 停机时一定放下
         c.gear_up_locked = False
         c.gear_down_locked = False
-        c.on_ground = True
+        # 关键：先标成"还没接地"。
+        # 出生点故意比跑道面高 SPAWN_CLEARANCE，如果这里就写 on_ground=True，
+        # 物理的地面吸附（只在空中生效）不会把它压下来，飞机就会一直悬在
+        # 跑道上方 25 cm —— 看着像浮空。标成未接地后它会在 0.2 秒内
+        # 自己轻轻落到跑道上，之后就正常贴地滑跑。
+        # 25 cm 的自由落体速度约 2.2 m/s，远低于 19 m/s 的坠毁阈值，不会摔。
+        c.on_ground = False
         c.vel = np.zeros(3)
         c.speed_val = 0.0
         c.throttle = 0.0
+        c.alpha = math.radians(2.0)
+        c.pitch = 0.0
+        c.roll = 0.0
         self.camera.pos = p0 + np.array([0.0, 6.0, 30.0])
         self.camera.target = p0 + np.array([0.0, 1.0, -20.0])
         self.camera.smooth = self.camera.pos.copy()
@@ -279,7 +303,7 @@ class SkyFlightApp:
 
         self.plane_mesh, self.gear_mesh = plane.build_plane(self.aircraft_key)
         self.shadow_mesh = plane.build_shadow(self.aircraft_key)
-        self.runway_mesh = plane.build_runway()
+        self.runway_mesh, self.runway_paint_mesh = plane.build_runway_parts()
         self.tower_mesh = plane.build_tower()
         # 双层地形：近处细、远处大范围
         self.terrain_patch = terrain.Terrain()
@@ -549,7 +573,10 @@ class SkyFlightApp:
             mesh.draw()
 
         gy = terrain.height_at(0.0, 0.0)
+        # 沥青层 + 标线层都正常画（标线抬了 5 mm，深度上明确压过沥青，
+        # 不会 z-fighting，也不会挡住飞机）。
         draw_at(self.runway_mesh, (0.0, gy + 0.2, 0.0))
+        draw_at(self.runway_paint_mesh, (0.0, gy + 0.2, 0.0))
         draw_at(self.tower_mesh, (95.0, terrain.height_at(95.0, -180.0), -180.0))
 
         # 飞机

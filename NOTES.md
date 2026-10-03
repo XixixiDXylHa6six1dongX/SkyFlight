@@ -140,3 +140,22 @@ runtime\python.exe tests\auto_smoke.py       # opens a window for 150 frames
     420 m sampling grid then usually missed entirely. When a placement rule
     yields nothing, print the terrain statistics it is filtering on before
     touching the rule.
+16. **"The aircraft is sunk into the ground" was neither of the obvious
+    causes.** The terrain is dead flat at the spawn (0.000 m across the whole
+    runway rectangle) and the sit height matched the runway surface exactly, so
+    two earlier investigations concluded "nothing is wrong". The actual culprit
+    was the **runway paint**: centre line, edge lines and threshold numbers were
+    60 mm-thick boxes whose tops reached y = 0.310, while the tyres rest at
+    y = 0.240. The wheels were buried 70 mm inside the markings. When a user
+    reports an intersection that your own measurement says cannot happen,
+    measure the *decoration* too, not just the collision surface.
+
+17. **If you lift something off the ground on purpose, check the physics will
+    put it back.** Adding a spawn clearance needed three fixes in a row, each
+    only visible after the previous one: (a) `on_ground = True` disables the
+    ground-snap branch entirely; (b) the ground branch clamps the flight-path
+    angle to −0.02..+4°, pinning vertical speed at zero; (c) the velocity
+    vector is rebuilt from `speed_val * sin(gamma)` every frame, so writing
+    `vel[1]` alone is discarded next frame — `speed_val` has to change too.
+    Verify with a frame-by-frame trace printing altitude, vertical speed and
+    `on_ground`, not with a single before/after sample.

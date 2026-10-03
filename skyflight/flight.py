@@ -464,6 +464,15 @@ class Aircraft:
             # 所以地面上把轨迹角锁在 0~小幅抬头之间。
             if self.speed_val < 40.0:
                 gamma = max(-0.02, min(gamma, math.radians(4.0)))
+            # 但如果出生点比地面高（app 里故意留了离地间隙），这一锁会让飞机
+            # 永远悬着不动。所以这种情况额外给一个"轻轻落下"的下降速度：
+            # 要在 0.6 秒内落到跑道面上，落地速度约 1.5 m/s，远低于坠毁阈值。
+            # 注意必须同时改 speed_val —— 速度矢量每帧都会由
+            # speed_val * sin(gamma) 重新算出来，只改 vel[1] 下一帧就被覆盖。
+            if agl > 0.01 and not self.crashed:
+                drop_rate = min(1.6, agl / 0.6)
+                gamma = math.asin(max(-1.0, min(1.0, -drop_rate / V)))
+                self.speed_val = max(0.0, V * max(0.0, math.cos(gamma)))
         else:
             # 已经离地：俯仰角由迎角和轨迹角自然给出
             self.pitch = self.alpha + gamma

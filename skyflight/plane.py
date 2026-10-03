@@ -305,38 +305,79 @@ def build_shadow(key=None):
 
 
 def build_runway():
-    """跑道：沥青 + 中线虚线 + 边线 + 跑道灯"""
+    """跑道沥青层（返回单个网格，兼容老调用）"""
+    return gfx.Mesh(_runway_asphalt())
+
+
+def build_runway_parts():
+    """返回 (沥青网格, 标线网格)
+
+    拆成两个网格是为了绘制时分别处理：
+      沥青正常画；标线**关掉深度测试**再画，这样标线和沥青同高度也不会
+      z-fighting（闪烁），而飞机随后照常画，轮胎压在标线之上。
+    """
+    return gfx.Mesh(_runway_asphalt()), gfx.Mesh(_runway_paint())
+
+
+def _runway_asphalt():
+    """沥青板：从地面铺到 RUNWAY_TOP"""
+    return gfx.box(0.0, RUNWAY_TOP * 0.5, 0.0, RUNWAY_WID, RUNWAY_TOP, RUNWAY_LEN,
+                   (0.20, 0.20, 0.22))
+
+
+def _runway_paint():
+    """跑道标线：中线虚线 + 两侧边线 + 两端编号 + 跑道灯
+
+    标线一律画在 RUNWAY_TOP **同一高度**（零厚度薄片），所以轮胎底
+    停在 RUNWAY_TOP 就是"正好压在最上层"，不会陷进去。
+    跑道灯立在跑道两侧之外，飞机滑跑不会撞到。
+    """
     v = []
     L = RUNWAY_LEN
     W = RUNWAY_WID
-    v += gfx.box(0.0, RUNWAY_TOP * 0.5, 0.0, W, RUNWAY_TOP, L, (0.20, 0.20, 0.22))
+    # 标线贴在沥青面上：抬 5 mm 让它在深度上明确压过沥青（否则同高度会
+    # z-fighting 闪烁），又远低于轮胎底，所以不会挡住飞机。
+    PAINT_LIFT = 0.005
+    paint_y = RUNWAY_TOP - PAINT_LIFT * 0.5      # 顶面 = RUNWAY_TOP + 5mm
+    paint_h = PAINT_LIFT + 0.004
+    WHITE = (0.93, 0.93, 0.88)
+
+    # 中线虚线
     n = 24
     for i in range(n):
         z = -L / 2 + (i + 0.5) * (L / n)
-        v += gfx.box(0.0, RUNWAY_TOP + 0.02, z, 1.7, 0.06, L / n * 0.48, (0.93, 0.93, 0.88))
+        v += gfx.box(0.0, paint_y, z, 1.7, paint_h, L / n * 0.48, WHITE)
+    # 两侧边线
     for side in (1, -1):
-        v += gfx.box(side * (W / 2 - 1.3), RUNWAY_TOP + 0.02, 0.0, 1.0, 0.06, L,
-                     (0.93, 0.93, 0.88))
+        v += gfx.box(side * (W / 2 - 1.3), paint_y, 0.0, 1.0, paint_h, L, WHITE)
+    # 两端跑道编号
+    for side in (1, -1):
+        for k in range(4):
+            v += gfx.box(side * (7.0 - k * 4.6), paint_y, -L / 2 + 30.0,
+                         2.2, paint_h, 12.0, WHITE)
+    # 跑道灯（立杆 + 灯头），在跑道外侧
     for i in range(0, 27):
         z = -L / 2 + i * (L / 26)
         for side in (1, -1):
             v += gfx.box(side * (W / 2 + 2.2), RUNWAY_TOP + 0.31, z, 0.75, 0.95, 0.75,
                          (0.98, 0.86, 0.30))
-    for side in (1, -1):
-        for k in range(4):
-            v += gfx.box(side * (7.0 - k * 4.6), RUNWAY_TOP + 0.04, -L / 2 + 30.0,
-                         2.2, 0.06, 12.0, (0.93, 0.93, 0.88))
-    return gfx.Mesh(v)
+    return v
+
+
+# 跑道面上最高的地方（标线顶面）。停机时轮胎底停在这之上。
+RUNWAY_PAINT_TOP = RUNWAY_TOP + 0.005 + 0.004 * 0.5
 
 
 def surface_height(x, z, terrain_h):
     """实际可落脚的地面高度 = 地形和跑道里更高的那个。
 
     碰撞检测必须用它，否则飞机会沉进跑道里。
+    注意返回的是**跑道面上最高的那一层**（含标线），
+    这样轮胎底不会插进标线里。
     terrain_h 是地形高度（由调用方传进来，避免循环依赖）。
     """
     if abs(x) <= RUNWAY_WID * 0.5 and abs(z) <= RUNWAY_LEN * 0.5:
-        return max(float(terrain_h), RUNWAY_TOP)
+        return max(float(terrain_h), RUNWAY_PAINT_TOP)
     return float(terrain_h)
 
 
