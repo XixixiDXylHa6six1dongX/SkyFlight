@@ -11,7 +11,7 @@ import math
 
 import numpy as np
 
-from . import gfx, terrain, props
+from . import gfx, terrain, props, linear
 
 
 # ---------------------------------------------------------------- 随机（可复现）
@@ -132,6 +132,11 @@ class Scenery:
         self.conifer_count = 0
         self.broadleaf_count = 0
         self.props = {}                  # {名字: Props}
+        self.ribbons = {}                # 河流 / 公路（每段一个网格）
+        self.fields = {}                 # 农田色块（按颜色分组的网格）
+        self.river_count = 0
+        self.road_count = 0
+        self.field_count = 0
         self.turbine = None              # 叶轮（单独画，会转）
         self.turbine_count = 0
 
@@ -277,22 +282,33 @@ class Scenery:
         if GI.size == 0:
             return out
 
-        for i in range(GI.size):
-            gx, gz = int(GI[i]), int(GJ[i])
-            # 村址中心
-            vx = (gx + 0.5 + (_hash01(gx, gz, 21.0) - 0.5) * 0.6) * vc
-            vz = (gz + 0.5 + (_hash01(gx, gz, 22.0) - 0.5) * 0.6) * vc
-            dx, dz = vx - cx, vz - cz
-            if dx * dx + dz * dz > (r * 0.92) ** 2:
-                continue
-            # 机场核心区和跑道附近不放村子
-            if bool(self._runway_clearance(np.array([vx]), np.array([vz]))[0]):
-                continue
-            hc = float(terrain.height_at(vx, vz))
-            if hc < terrain.WATER_LEVEL + 4.0 or hc > 620.0:
-                continue
-            if float(terrain.slope_at(vx, vz)) > 0.55:
-                continue
+        # 先把所有村址的位置算出来，然后**一次性**查地形和坡度。
+        # 逐点查会慢很多（实测村庄占整个地景生成时间的 35%）。
+        n_site = GI.size
+        vx_all = (GI + 0.5 + (_hash01_arr(GI, GJ, 21.0) - 0.5) * 0.6) * vc
+        vz_all = (GJ + 0.5 + (_hash01_arr(GI, GJ, 22.0) - 0.5) * 0.6) * vc
+        ok_site = ((vx_all - cx) ** 2 + (vz_all - cz) ** 2 <= (r * 0.92) ** 2)
+        ok_site &= ~self._runway_clearance(vx_all, vz_all)
+        if not np.any(ok_site):
+            return out
+        hc_all = np.asarray(terrain.height_at(vx_all, vz_all), dtype=np.float64)
+        ok_site &= (hc_all >= terrain.WATER_LEVEL + 4.0) & (hc_all <= 620.0)
+        if not np.any(ok_site):
+            return out
+        # 坡度也一次算完（高度场差分）
+        step = vc * 0.25
+        hx_all = np.asarray(terrain.height_at(vx_all + step, vz_all),
+                            dtype=np.float64)
+        hz_all = np.asarray(terrain.height_at(vx_all, vz_all + step),
+                            dtype=np.float64)
+        slope_all = np.sqrt((hx_all - hc_all) ** 2
+                            + (hz_all - hc_all) ** 2) / step
+        ok_site &= slope_all <= 0.55
+
+        sites = np.nonzero(ok_site)[0]
+        for si in sites:
+            gx, gz = int(GI[si]), int(GJ[si])
+            vx, vz, hc = float(vx_all[si]), float(vz_all[si]), float(hc_all[si])
 
             # 一个村子 4~9 座建筑
             count = 4 + int(_hash01(gx, gz, 23.0) * 6)
@@ -301,20 +317,31 @@ class Scenery:
             kinds = ['house'] * 6 + ['barn'] * 2 + ['warehouse'] + ['water_tower']
             if has_church:
                 kinds.append('church')
+            # 同样把这一村的建筑位置一次算出来再批量查地形
+            bs = []
             for b in range(count):
                 a = _hash01(gx, gz, 30.0 + b) * 6.283
                 dist = 22.0 + _hash01(gx, gz, 40.0 + b) * 68.0
-                bx = vx + math.cos(a) * dist
-                bz = vz + math.sin(a) * dist
-                if bool(self._runway_clearance(np.array([bx]), np.array([bz]))[0]):
-                    continue
-                hb = float(terrain.height_at(bx, bz))
-                if hb < terrain.WATER_LEVEL + 3.0:
-                    continue
-                if float(terrain.slope_at(bx, bz)) > 0.6:
-                    continue
+                bs.append((vx + math.cos(a) * dist, vz + math.sin(a) * dist, b))
+            if not bs:
+                continue
+            bx_all = np.asarray([q[0] for q in bs])
+            bz_all = np.asarray([q[1] for q in bs])
+            good = ~self._runway_clearance(bx_all, bz_all)
+            hb_all = np.asarray(terrain.height_at(bx_all, bz_all),
+                                dtype=np.float64)
+            good &= hb_all >= terrain.WATER_LEVEL + 3.0
+            hbx = np.asarray(terrain.height_at(bx_all + step, bz_all),
+                             dtype=np.float64)
+            hbz = np.asarray(terrain.height_at(bx_all, bz_all + step),
+                             dtype=np.float64)
+            sl = np.sqrt((hbx - hb_all) ** 2 + (hbz - hb_all) ** 2) / step
+            good &= sl <= 0.6
+
+            for k in np.nonzero(good)[0]:
+                bx, bz, b = float(bx_all[k]), float(bz_all[k]), bs[k][2]
+                hb = float(hb_all[k])
                 pick = _hash01(gx, gz, 50.0 + b)
-                # 第一座如果是教堂就放教堂，否则按权重抽
                 if b == 0 and has_church:
                     kind = 'church'
                 else:
@@ -323,7 +350,8 @@ class Scenery:
                 yaw = _hash01(gx, gz, 70.0 + b) * 6.283
                 t = _hash01(gx, gz, 80.0 + b)
                 out[kind].append((bx, hb - 0.4, bz, sc, yaw,
-                                  0.85 + t * 0.20, 0.85 + t * 0.18, 0.85 + t * 0.16))
+                                  0.85 + t * 0.20, 0.85 + t * 0.18,
+                                  0.85 + t * 0.16))
         return out
 
     def _place_rocks(self, cx, cz):
@@ -450,7 +478,190 @@ class Scenery:
         self._pending_turbines = turb
         self.turbine_count = turb.shape[0]
 
+        # 线状地景：河流 + 公路（贴地飘带）
+        self._pending_rivers = self._make_rivers(cx, cz)
+        self._pending_roads = self._make_roads(cx, cz)
+        # 面状地景：农田色块
+        self._pending_fields = self._make_fields(cx, cz)
+        self.river_count = len(self._pending_rivers)
+        self.road_count = len(self._pending_roads)
+        self.field_count = len(self._pending_fields)
+
         return True
+
+    # ---------------------------------------------------------- 河流 / 公路 / 农田
+    def _make_rivers(self, cx, cz):
+        """从附近的高地往下追几条河
+
+        每条河从半径内比较高、比较平的地方出发，每隔一段取一个源头，
+        然后顺坡而下直到入湖。用 < 400 m 的间距保证不会挤成一堆。
+        """
+        out = []
+        r = self.radius
+        step = 520.0
+        n = int(r / step)
+        k = np.arange(-n, n + 1, dtype=np.int64)
+        gi = np.floor(cx / step).astype(np.int64) + k
+        gj = np.floor(cz / step).astype(np.int64) + k
+        GI, GJ = np.meshgrid(gi, gj, indexing='ij')
+        GI, GJ = GI.ravel(), GJ.ravel()
+        # 只有一部分格子做源头
+        keep = _hash01_arr(GI, GJ, 200.0) > 0.55
+        GI, GJ = GI[keep], GJ[keep]
+        used = []
+        for i in range(GI.size):
+            x = (GI[i] + _hash01(GI[i], GJ[i], 201.0)) * step
+            z = (GJ[i] + _hash01(GI[i], GJ[i], 202.0)) * step
+            dx, dz = x - cx, z - cz
+            if dx * dx + dz * dz > (r * 0.92) ** 2:
+                continue
+            # 源头之间至少隔开 500 m
+            if any((x - ux) ** 2 + (z - uz) ** 2 < 500.0 ** 2 for ux, uz in used):
+                continue
+            path = linear.trace_river(x, z, step=80.0, max_steps=110)
+            if len(path) < 5:
+                continue
+            used.append((x, z))
+            v = linear.ribbon(
+                path, width=26.0, y_offset=-0.55, wobble=4.0,
+                seed=int(abs(GI[i] * 31 + GJ[i]) & 0x7FFFFFFF),
+                color_a=(0.14, 0.30, 0.48), color_b=(0.20, 0.42, 0.60))
+            if v:
+                out.append(np.asarray(v, dtype=np.float32))
+            if len(out) >= 4:
+                break
+        return out
+
+    def _make_roads(self, cx, cz):
+        """连接村庄的公路
+
+        做法：拿半径内的村址两两配对（就近连），连成几条路。
+        路比河窄、颜色偏灰，贴地抬高一点。
+        """
+        out = []
+        r = self.radius
+        vc = 320.0
+        n = int(r / vc)
+        k = np.arange(-n, n + 1, dtype=np.int64)
+        gi = np.floor(cx / vc).astype(np.int64) + k
+        gj = np.floor(cz / vc).astype(np.int64) + k
+        GI, GJ = np.meshgrid(gi, gj, indexing='ij')
+        GI, GJ = GI.ravel(), GJ.ravel()
+        site = _hash01_arr(GI, GJ, 20.0) > 0.60
+        GI, GJ = GI[site], GJ[site]
+        if GI.size < 2:
+            return out
+        # 村址坐标
+        nodes = []
+        for i in range(GI.size):
+            x = (GI[i] + 0.5 + (_hash01(GI[i], GJ[i], 21.0) - 0.5) * 0.6) * vc
+            z = (GJ[i] + 0.5 + (_hash01(GI[i], GJ[i], 22.0) - 0.5) * 0.6) * vc
+            dx, dz = x - cx, z - cz
+            if dx * dx + dz * dz <= (r * 0.88) ** 2:
+                nodes.append((x, z))
+        if len(nodes) < 2:
+            return out
+        # 每个村连到最近的邻居（限制条数，避免画太多）
+        made = 0
+        for i, (x0, z0) in enumerate(nodes):
+            best = None
+            for j, (x1, z1) in enumerate(nodes):
+                if i == j:
+                    continue
+                dd = (x1 - x0) ** 2 + (z1 - z0) ** 2
+                if best is None or dd < best[0]:
+                    best = (dd, x1, z1)
+            if best is None:
+                continue
+            dd, x1, z1 = best
+            if dd > 900.0 ** 2 or dd < 100.0 ** 2:
+                continue
+            dist = math.sqrt(dd)
+            segs = max(3, int(dist / 120.0))
+            path = []
+            for s in range(segs + 1):
+                t = s / float(segs)
+                # 中间加一点弯曲，别是直线
+                bend = math.sin(t * math.pi) * (_hash01(i, s, 210.0) - 0.5) * dist * 0.16
+                px = x0 + (x1 - x0) * t
+                pz = z0 + (z1 - z0) * t
+                # 垂直于连线方向偏移
+                ux, uz = (x1 - x0) / dist, (z1 - z0) / dist
+                px += -uz * bend
+                pz += ux * bend
+                path.append((px, pz, float(terrain.height_at(px, pz))))
+            v = linear.ribbon(path, width=9.0, y_offset=0.14, wobble=0.8,
+                              seed=(i * 7919) & 0x7FFFFFFF, taper=False,
+                              color_a=(0.42, 0.40, 0.37),
+                              color_b=(0.46, 0.44, 0.41))
+            if v:
+                out.append(np.asarray(v, dtype=np.float32))
+            made += 1
+            if made >= 6:
+                break
+        return out
+
+    def _make_fields(self, cx, cz):
+        """农田：村庄周围的成片色块（不同颜色代表不同作物）"""
+        patches = []
+        r = self.radius
+        vc = 320.0
+        n = int(r / vc)
+        k = np.arange(-n, n + 1, dtype=np.int64)
+        gi = np.floor(cx / vc).astype(np.int64) + k
+        gj = np.floor(cz / vc).astype(np.int64) + k
+        GI, GJ = np.meshgrid(gi, gj, indexing='ij')
+        GI, GJ = GI.ravel(), GJ.ravel()
+        site = _hash01_arr(GI, GJ, 20.0) > 0.60
+        GI, GJ = GI[site], GJ[site]
+        # 几种作物颜色
+        palette = [
+            (0.42, 0.48, 0.20),      # 青苗
+            (0.62, 0.55, 0.24),      # 成熟
+            (0.36, 0.30, 0.20),      # 翻过的土
+            (0.50, 0.52, 0.26),      # 黄绿
+        ]
+        for i in range(GI.size):
+            gx, gz = int(GI[i]), int(GJ[i])
+            vx = (gx + 0.5 + (_hash01(gx, gz, 21.0) - 0.5) * 0.6) * vc
+            vz = (gz + 0.5 + (_hash01(gx, gz, 22.0) - 0.5) * 0.6) * vc
+            dx, dz = vx - cx, vz - cz
+            if dx * dx + dz * dz > (r * 0.85) ** 2:
+                continue
+            if bool(self._runway_clearance(np.array([vx]), np.array([vz]))[0]):
+                continue
+            hv = float(terrain.height_at(vx, vz))
+            if hv < terrain.WATER_LEVEL + 4.0 or hv > 620.0:
+                continue
+            if float(terrain.slope_at(vx, vz)) > 0.45:
+                continue
+            # 把这一村的所有地块位置先算出来，再一次性查地形和坡度
+            cnt = 3 + int(_hash01(gx, gz, 220.0) * 5)
+            cand = []
+            for b in range(cnt):
+                px = vx + (_hash01(gx, gz, 230.0 + b) - 0.5) * 260.0
+                pz = vz + (_hash01(gx, gz, 240.0 + b) - 0.5) * 260.0
+                cand.append((px, pz, b))
+            if not cand:
+                continue
+            pxs = np.asarray([c[0] for c in cand])
+            pzs = np.asarray([c[1] for c in cand])
+            phs = np.asarray(terrain.height_at(pxs, pzs), dtype=np.float64)
+            stp = 60.0
+            phx = np.asarray(terrain.height_at(pxs + stp, pzs), dtype=np.float64)
+            phz = np.asarray(terrain.height_at(pxs, pzs + stp), dtype=np.float64)
+            sls = np.sqrt((phx - phs) ** 2 + (phz - phs) ** 2) / stp
+            good = (phs >= terrain.WATER_LEVEL + 3.0) & (sls <= 0.40)
+            for k in np.nonzero(good)[0]:
+                px, pz, b = float(pxs[k]), float(pzs[k]), cand[k][2]
+                col = palette[int(_hash01(gx, gz, 250.0 + b) * len(palette))
+                              % len(palette)]
+                w = 40.0 + _hash01(gx, gz, 260.0 + b) * 70.0
+                d = 40.0 + _hash01(gx, gz, 270.0 + b) * 70.0
+                yaw = (_hash01(gx, gz, 280.0 + b) - 0.5) * 0.8
+                patches.append((col, px, pz, w, d, yaw))
+        return patches
+
 
     def upload(self):
         """把生成好但还没上传的实例数据传到显卡（需要 GL 上下文）"""
@@ -486,6 +697,34 @@ class Scenery:
             self.turbine.set_instances(rotor_data)
         self._pending_turbines = None
 
+        # 河流 / 公路：每段单独一个网格（飘带已经按地形采样过高度了）
+        for attr, key in (('_pending_rivers', 'rivers'),
+                          ('_pending_roads', 'roads')):
+            parts = getattr(self, attr, None) or []
+            for i, arr in enumerate(parts):
+                name = '%s_%d' % (key, i)
+                if name not in self.ribbons:
+                    self.ribbons[name] = gfx.Mesh(arr)
+                else:
+                    self.ribbons[name] = gfx.Mesh(arr)
+            setattr(self, attr, None)
+
+        # 农田：所有色块合成一个网格（按颜色分组，减少 draw call）
+        patches = getattr(self, '_pending_fields', None) or []
+        by_color = {}
+        for (col, px, pz, w, d, yaw) in patches:
+            by_color.setdefault(col, []).append((px, pz, w, d, yaw))
+        for col, items in by_color.items():
+            fp = linear.FlatPatch(col)
+            for (px, pz, w, d, yaw) in items:
+                fp.add(px, pz, w, d, yaw)
+            verts = fp.build()
+            if verts.size:
+                key = 'field_%d_%d_%d' % (int(col[0] * 99), int(col[1] * 99),
+                                          int(col[2] * 99))
+                self.fields[key] = gfx.Mesh(verts)
+        self._pending_fields = None
+
     def update_animation(self, dt):
         """每帧推进动画（风机叶轮转动）"""
         if self.turbine is not None:
@@ -512,6 +751,15 @@ class Scenery:
             if kind == 'turbine_tower':
                 continue
             p.draw(shader)
+        # 河流 / 公路 / 农田：平面网格，正常画
+        for mesh in self.ribbons.values():
+            shader.set_mat4('uModel', np.eye(4, dtype=np.float32))
+            shader.set_mat3('uNormalMat', np.eye(3, dtype=np.float32))
+            mesh.draw()
+        for mesh in self.fields.values():
+            shader.set_mat4('uModel', np.eye(4, dtype=np.float32))
+            shader.set_mat3('uNormalMat', np.eye(3, dtype=np.float32))
+            mesh.draw()
 
     def draw_turbines(self, shader):
         p = self.props.get('turbine_tower')

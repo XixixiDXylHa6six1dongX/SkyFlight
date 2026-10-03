@@ -223,6 +223,65 @@ void main() {
 }
 """
 
+# ============================================================ 粒子（朝向相机）
+# 关键：方片必须在**相机平面**里展开，否则从侧面看会变成一条线。
+# 所以顶点位置的 xy 分别乘相机的右向量和上向量。
+# 属性布局和 INST_VS 一样（0~2 顶点、3~6 实例），只是把 iYaw 当成"旋转角"，
+# 让每个粒子可以自转（烟/火球转起来更自然）。
+PARTICLE_VS = """
+#version 330 core
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec3 aColor;
+layout(location = 3) in vec3 iPos;       // 实例：世界位置
+layout(location = 4) in float iScale;    // 实例：尺寸
+layout(location = 5) in float iYaw;      // 实例：绕视线自转
+layout(location = 6) in vec3 iTint;      // 实例：颜色
+uniform mat4 uVP;
+uniform vec3 uRight;                     // 相机右向量
+uniform vec3 uUp;                        // 相机上向量
+out vec3 vColor;
+out vec3 vWorld;
+out vec2 vUV;
+void main() {
+    // 先在方片平面内自转，再展开到相机平面
+    float c = cos(iYaw), s = sin(iYaw);
+    vec2 q = vec2(aPos.x * c - aPos.y * s, aPos.x * s + aPos.y * c);
+    vec3 world = iPos + (uRight * q.x + uUp * q.y) * iScale;
+    vUV = aPos.xy + vec2(0.5);
+    vColor = aColor * iTint;
+    vWorld = world;
+    gl_Position = uVP * vec4(world, 1.0);
+}
+"""
+
+PARTICLE_FS = """
+#version 330 core
+in vec3 vColor;
+in vec3 vWorld;
+in vec2 vUV;
+uniform vec3 uCamPos;
+uniform vec3 uFogColor;
+uniform float uFogDensity;
+uniform float uSoftness;     // 边缘软化程度
+out vec4 FragColor;
+void main() {
+    // 圆形软边：把方片裁成圆，边缘渐隐，像烟/火球而不是方块
+    vec2 d = vUV - vec2(0.5);
+    float r = length(d) * 2.0;
+    float a = clamp((1.0 - r) / max(0.02, uSoftness), 0.0, 1.0);
+    a = a * a;
+    if (a <= 0.004) discard;
+
+    vec3 col = vColor;
+    // 远处随雾淡出
+    float dist = length(uCamPos - vWorld);
+    float fog = 1.0 - exp(-dist * uFogDensity);
+    col = mix(col, uFogColor, clamp(fog, 0.0, 0.85));
+    FragColor = vec4(col * a, a);
+}
+"""
+
 # ============================================================ 半透明水面
 # 注意：水面不能用 INST_VS！那是实例化着色器，要用 location 3~6 的实例属性。
 # 水面网格没有这些属性，默认值 (0,0,0,1) 会把所有顶点缩到原点，什么都画不出来。

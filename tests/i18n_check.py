@@ -132,8 +132,10 @@ for m in re.finditer(r"hud\.text\(\s*'([^']*)'", src):
         continue
     fails.append('hud.py: ' + lit)
 src2 = io.open(os.path.join(base, 'skyflight', 'app.py'), encoding='utf-8').read()
-# 启动诊断/开发提示允许保留中文（它们不出现在游戏界面里）
-ALLOW = ('[i18n]', '出错了', '中/英', '提示', '机型', '起落架')
+# 启动诊断/开发提示允许保留中文（它们只出现在黑色控制台里，
+# 不进入游戏界面，所以不参与游戏内语言切换）
+ALLOW = ('[i18n]', '出错了', '中/英', '提示', '机型', '起落架',
+         '[音效]', '[aircraft]', '[gear]', '[water]')
 for m in re.finditer(r"print\(\s*'([^']*[\u4e00-\u9fff][^']*)'", src2):
     lit = m.group(1)
     if any(a in lit for a in ALLOW):

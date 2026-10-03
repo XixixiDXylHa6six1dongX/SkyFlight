@@ -31,9 +31,15 @@ src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 print('  app.py 中的按键处理:')
 for label, needle in (("G 收起落架", "n == 'G'"),
                       ("V 换机型", "n == 'V'"),
+                      ("L 切换语言", "n == 'L'"),
+                      ("N 音效开关", "n == 'N'"),
+                      ("调用 toggle_sound", "self.toggle_sound()"),
+                      ("调用 toggle_language", "self.toggle_language()"),
                       ("调用 toggle_gear", "self.craft.toggle_gear()"),
                       ("调用 next_aircraft", "self.next_aircraft()"),
                       ("绘制起落架网格", "self.gear_mesh.draw()"),
+                      ("绘制粒子", "self._draw_particles"),
+                      ("更新特效", "self._update_effects"),
                       ("按机型建模型", "plane.build_plane(self.aircraft_key)")):
     check(label, needle in src)
 

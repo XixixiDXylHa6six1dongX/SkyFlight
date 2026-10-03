@@ -40,6 +40,9 @@ t_total = 0.0
 worst = 0.0
 found_turbines = 0
 found_kinds = set()
+found_rivers = 0
+found_roads = 0
+found_fields = 0
 for cx, cz in ((0, 0), (3000, 2000), (-4000, 5000), (6000, -3000),
                (1200, -5000), (-2500, -2500), (8000, 3000)):
     sc.center = None
@@ -53,15 +56,22 @@ for cx, cz in ((0, 0), (3000, 2000), (-4000, 5000), (6000, -3000),
         found_turbines += turb
     kinds = {k: v for k, v in sc.village_stats.items() if v}
     found_kinds.update(kinds)
-    print('     (%6d,%6d) %.3fs  针叶%4d 阔叶%4d 风机%2d  建筑 %s' % (
+    found_rivers += sc.river_count
+    found_roads += sc.road_count
+    found_fields += sc.field_count
+    print('     (%6d,%6d) %.3fs  针叶%4d 阔叶%4d 风机%2d 河%d 路%d 田%d  建筑 %s' % (
         cx, cz, dt, sc.conifer_count, sc.broadleaf_count, turb,
+        sc.river_count, sc.road_count, sc.field_count,
         ','.join('%s%d' % (k[:4], v) for k, v in sorted(kinds.items())) or '-'))
 
-check('生成速度（平均 < 0.35 s）', t_total / 7 < 0.35, '平均 %.3f s，最慢 %.3f s' % (
+check('生成速度（平均 < 0.45 s）', t_total / 7 < 0.45, '平均 %.3f s，最慢 %.3f s' % (
     t_total / 7, worst))
 check('混合林（针叶 + 阔叶都有）', sc.conifer_count > 0 and sc.broadleaf_count > 0,
       '最近一次 针叶%d 阔叶%d' % (sc.conifer_count, sc.broadleaf_count))
 check('风力发电机能生成', found_turbines > 0, '7 个位置共 %d 台' % found_turbines)
+check('河流能生成', found_rivers > 0, '7 个位置共 %d 段' % found_rivers)
+check('公路能生成', found_roads > 0, '7 个位置共 %d 段' % found_roads)
+check('农田能生成', found_fields > 0, '7 个位置共 %d 块' % found_fields)
 check('村庄建筑种类丰富（>=4 种）', len(found_kinds) >= 4,
       '出现过: %s' % ', '.join(sorted(found_kinds)))
 

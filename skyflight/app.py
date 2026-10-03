@@ -12,7 +12,8 @@ import numpy as np
 from OpenGL import GL
 
 from . import (gfx, shaders, sky, terrain, flight, plane, scenery, specs,
-               i18n, hud as hudmod)
+               i18n, sound as soundmod, particles as particlesmod,
+               hud as hudmod)
 from .version import VERSION, BUILD_DATE
 
 
@@ -204,6 +205,18 @@ class SkyFlightApp:
                 if SPAWN_ON_RUNWAY:
                     self._place_on_runway()
 
+        # ---- 音效（--no-sound / -q 关闭；打不开设备也会自动静音）
+        self.sound_on = not ('--no-sound' in sys.argv or '-q' in sys.argv)
+        self.sound = soundmod.SilentSound()
+
+        # ---- 粒子特效（爆炸、扬尘、轮胎烟、凝结尾）
+        self.particles = None
+        self.contrail_timer = 0.0
+        self.touchdown_prev = True
+        self.hit_cooldown = 0.0
+        self.crash_smoke_timer = 0.0
+        self.particle_shader = None
+
     # ------------------------------------------------ 机型 / 停机
     def _place_on_runway(self):
         """把飞机放到跑道上，并按当前机型的起落架高度确定停机高度
@@ -296,6 +309,18 @@ class SkyFlightApp:
         self.terrain_shader = gfx.Shader(shaders.TERRAIN_VS, shaders.TERRAIN_FS, 'terrain')
         self.inst_shader = gfx.Shader(shaders.INST_VS, shaders.INST_FS, 'inst')
         self.water_shader = gfx.Shader(shaders.WATER_VS, shaders.WATER_FS, 'water')
+        # 粒子用专门的 billboard 着色器（方片要展开到相机平面里）
+        self.particle_shader = gfx.Shader(shaders.PARTICLE_VS, shaders.PARTICLE_FS,
+                                         'particle')
+        # 粒子池（爆炸/扬尘/烟）
+        self.particles = particlesmod.Particles()
+        # 音效：GL 就绪后再启动（避免拖慢窗口创建）
+        if self.sound_on:
+            self.sound = soundmod.Sound()
+            if self.sound.ready:
+                print('  [音效] 已启动（%d Hz 混音）' % soundmod.RATE)
+            else:
+                print('  [音效] 不可用，已静音：%s' % (self.sound.error or '未知'))
         self.hud_shader = hudmod.make_hud_shader()
         self.hud = hudmod.Hud()
         self.show_hud = True
@@ -323,12 +348,17 @@ class SkyFlightApp:
 
     # ------------------------------------------------ 全屏
     def toggle_fullscreen(self):
-        """在窗口和全屏之间切换"""
+        """在窗口和全屏之间切换
+
+        全屏时显式关掉窗口装饰（标题栏 + 边框），保证看不到那圈窗口条子。
+        只靠 set_window_monitor 在部分 Windows 版本上仍会残留一条标题栏。
+        """
         monitor = glfw.get_primary_monitor()
         if monitor is None:
             return
         if self.fullscreen:
-            # 回到窗口模式：还原原来的位置和大小
+            # 回到窗口模式：先恢复装饰和大小，再还原位置
+            glfw.set_window_attrib(self.window, glfw.DECORATED, True)
             glfw.set_window_monitor(self.window, None, 100, 80, WINDOW_W, WINDOW_H, 0)
             if self.window_rect is not None:
                 x, y, w, h = self.window_rect
@@ -348,6 +378,8 @@ class SkyFlightApp:
             glfw.set_window_monitor(self.window, monitor, 0, 0,
                                    mode.size.width, mode.size.height,
                                    mode.refresh_rate)
+            # 关键：再明确关掉装饰，确保标题栏/边框彻底消失
+            glfw.set_window_attrib(self.window, glfw.DECORATED, False)
             self.fullscreen = True
         # 全屏切换会改变画面尺寸，重新读取一次，避免第一帧比例不对
         glfw.poll_events()
@@ -383,6 +415,9 @@ class SkyFlightApp:
         elif n == 'L':
             # 中英文界面切换
             self.toggle_language()
+        elif n == 'N':
+            # 音效开关
+            self.toggle_sound()
         elif n == 'G':
             # 收起落架 / 放起落架（安全检查放在 Aircraft.toggle_gear 里）
             # toggle_gear 返回的是 i18n 键，这里再翻译成当前语言
@@ -467,6 +502,95 @@ class SkyFlightApp:
             self.water.upload()
             # 风机叶轮转动等动画
             self.scenery.update_animation(dt)
+
+        # ---------------- 特效 + 音效
+        self._update_effects(dt)
+
+    def _effect_events(self):
+        """检测"该放特效/音效"的事件（坠毁、接地、擦地）"""
+        c = self.craft
+        # 坠毁：只触发一次
+        if c.crashed and not getattr(self, '_was_crashed', False):
+            self._was_crashed = True
+            if self.particles is not None:
+                # 爆炸放在机身高度（不是地面），看起来更像空中炸开
+                self.particles.explosion(
+                    (c.pos[0], c.pos[1] + 0.5, c.pos[2]), scale=1.0)
+            self.sound.explosion()
+        if not c.crashed:
+            self._was_crashed = False
+
+        # 接地：从"空中"变成"贴地"的那一刻
+        was_air = not self.touchdown_prev
+        if c.on_ground and was_air and not c.crashed:
+            strength = min(1.6, 0.5 + abs(c.vertical_speed) * 0.06)
+            if self.particles is not None:
+                gh = ground_at(c.pos[0], c.pos[2])
+                self.particles.dust((c.pos[0], gh + 0.3, c.pos[2]), strength)
+            self.sound.touchdown(strength)
+        self.touchdown_prev = bool(c.on_ground)
+
+        # 擦地 / 撞地（贴地但角度不对）
+        self.hit_cooldown = max(0.0, self.hit_cooldown - 1.0 / 60.0)
+        if (c.on_ground and not c.crashed and self.hit_cooldown <= 0.0
+                and (abs(c.roll) > 0.32 or abs(c.pitch) > 0.30)
+                and c.airspeed_kmh > 40.0):
+            self.hit_cooldown = 0.5
+            self.sound.hit()
+            if self.particles is not None:
+                gh = ground_at(c.pos[0], c.pos[2])
+                self.particles.dust((c.pos[0], gh + 0.2, c.pos[2]), 0.8, n=14)
+
+    def _update_effects(self, dt):
+        """推进粒子 + 把当前飞行状态喂给音效"""
+        c = self.craft
+        self._effect_events()
+
+        # ---- 尾迹：高空凝结尾 / 轮胎烟 / 坠毁后冒烟
+        if self.particles is not None:
+            fwd, right, up, R = c.basis()
+            vel = c.vel.copy()
+            # 高空凝结尾（900 m 以上、速度够快）
+            if (not c.crashed and not c.on_ground and c.altitude > 900.0
+                    and c.airspeed_kmh > 120.0):
+                self.contrail_timer += dt
+                if self.contrail_timer >= 0.06:
+                    self.contrail_timer = 0.0
+                    for side in (-1.0, 1.0):
+                        p = c.pos + right * (side * 7.0) - fwd * 1.0
+                        self.particles.contrail(tuple(p), vel, 1.0, n=1)
+            else:
+                self.contrail_timer = 0.0
+            # 轮胎烟（重刹 / 高速贴地）
+            if (c.on_ground and not c.crashed
+                    and c.airspeed_kmh > 60.0
+                    and getattr(c, 'airbrake', 0.0) > 0.5):
+                for side in (-1.0, 1.0):
+                    p = c.pos + right * (side * 1.1) - fwd * 1.8
+                    p[1] = ground_at(p[0], p[2]) + 0.15
+                    self.particles.smoke_trail(tuple(p), vel, 1.0, n=2)
+            # 坠毁后持续冒黑烟
+            if c.crashed:
+                self.crash_smoke_timer += dt
+                if self.crash_smoke_timer >= 0.08:
+                    self.crash_smoke_timer = 0.0
+                    if self.time - c.crash_timer < 6.0 or c.crash_timer < 6.0:
+                        self.particles.smoke_trail(
+                            tuple(c.pos + np.array([0.0, 1.0, 0.0])),
+                            np.zeros(3), 1.0, n=3, dark=True)
+            self.particles.update(dt if not self.paused else 0.0)
+
+        # ---- 音效状态
+        spd_frac = min(1.5, c.airspeed_kmh / 300.0)
+        self.sound.set_state(
+            throttle=c.throttle,
+            speed_frac=spd_frac,
+            kind=c.spec.kind,
+            on_ground=c.on_ground,
+            brakes=getattr(c, 'airbrake', 0.0),
+            stalled=c.stalling,
+            paused=self.paused,
+        )
 
     def draw(self):
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
@@ -621,6 +745,56 @@ class SkyFlightApp:
             self.obj_shader.set_mat3('uNormalMat', gm[:3, :3].astype(np.float32))
             self.gear_mesh.draw()
 
+        # ---------- 粒子特效（爆炸 / 扬尘 / 烟 / 凝结尾）
+        # 放在最后画，这样烟和火会盖在飞机和地景之上（爆炸本来就该挡住机身）。
+        self._draw_particles(VP)
+
+    def _draw_particles(self, VP):
+        """画粒子：方片展开到相机平面，所以要把相机的右/上向量传进去"""
+        if self.particles is None or self.particle_shader is None:
+            return
+        if self.particles.count() == 0:
+            return
+        # 从 VP 矩阵反推相机的右/上前向量不方便，直接由相机位置和目标算
+        cam = np.asarray(self.camera.pos, dtype=np.float64)
+        tgt = np.asarray(self.camera.target, dtype=np.float64)
+        f = tgt - cam
+        ln = np.linalg.norm(f)
+        if ln < 1e-6:
+            return
+        f = f / ln
+        r = np.cross(f, np.array([0.0, 1.0, 0.0]))
+        rl = np.linalg.norm(r)
+        r = r / rl if rl > 1e-6 else np.array([1.0, 0.0, 0.0])
+        u = np.cross(r, f)
+
+        data, n = self.particles.visible_instances(r, u)
+        if data is None or n == 0:
+            return
+
+        sh = self.particle_shader
+        sh.use()
+        sh.set_mat4('uVP', VP)
+        sh.set_vec3('uRight', r)
+        sh.set_vec3('uUp', u)
+        sh.set_vec3('uCamPos', cam)
+        sh.set_vec3('uFogColor', self.fog_color)
+        sh.set_float('uFogDensity', self.fog_density)
+        sh.set_float('uSoftness', 0.85)
+
+        # 半透明混合：烟/火需要 alpha
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
+        GL.glDepthMask(GL.GL_FALSE)          # 粒子之间不互相遮挡（更蓬松）
+        GL.glDisable(GL.GL_CULL_FACE)        # 方片两面都要可见
+        # 网格是懒加载的（第一次画粒子时才建，需要 GL 上下文）
+        self.particles.ensure_mesh()
+        self.particles.mesh.set_instances(data)
+        self.particles.mesh.draw_instanced()
+        GL.glEnable(GL.GL_CULL_FACE)
+        GL.glDepthMask(GL.GL_TRUE)
+        GL.glDisable(GL.GL_BLEND)
+
         # ---------- 仪表盘叠加层
         if self.show_hud:
             try:
@@ -648,6 +822,23 @@ class SkyFlightApp:
         # 切换后立刻刷新标题和帮助信息
         glfw.set_window_title(self.window, self.title_text())
         print(self.help_text())
+
+    def toggle_sound(self):
+        """N 键：音效开关
+
+        关掉时只把音量压到 0（音频线程继续跑），这样再打开是瞬时的，
+        不会因为反复开关设备而卡一下。
+        """
+        self.sound_on = not self.sound_on
+        try:
+            self.sound.set_master(0.85 if self.sound_on else 0.0)
+        except Exception:
+            pass
+        if self.sound_on and not getattr(self.sound, 'ready', False):
+            # 之前没起来（比如启动时设备被占用），这里再试一次
+            self.sound = soundmod.Sound()
+        state = '开启' if self.sound_on else '关闭'
+        print('  [sound] %s' % state)
 
     def run(self):
         self.init_gl()
@@ -684,6 +875,11 @@ class SkyFlightApp:
                 self.title_timer = 0.0
                 glfw.set_window_title(self.window, self.title_text())
 
+        # 收尾：先关音效（音频线程要停掉），再关窗口
+        try:
+            self.sound.stop()
+        except Exception:
+            pass
         glfw.terminate()
 
     def title_text(self):

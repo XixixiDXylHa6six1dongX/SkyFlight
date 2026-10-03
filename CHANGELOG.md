@@ -1,5 +1,73 @@
 # Changelog
 
+## v1.6.0 — 2026-10-03
+
+### Added
+
+- **Sound.** Every sample is synthesised with numpy at runtime — no audio files
+  are bundled. A real mixer (Windows `waveOut` via `winmm`) lets the engine,
+  wind, ground roll and one-shot effects play **at the same time** instead of
+  cutting each other off. If no audio device is available the game runs silently
+  rather than crashing. Press **N** to toggle sound, or start with `--no-sound`.
+
+  | Sound | Behaviour |
+  |---|---|
+  | Engine | fundamental + harmonics + blade-beat; pitch and brightness follow throttle. Turbojets get a high whine and broadband jet noise, pistons a low rumble |
+  | Wind | broadband noise, louder and brighter with airspeed |
+  | Ground roll | tyre rumble on the runway, louder when braking |
+  | Touchdown | low thump + noise burst, scaled by sink rate |
+  | Stall warning | repeated short beep while stalled |
+  | Gear | hydraulic motor whine while the gear runs |
+  | Explosion | low sweep + noise blast + debris tail |
+  | Scrape | metal-on-runway noise when you touch down crooked |
+
+- **Explosion and particle effects** (`skyflight/particles.py`). A 700-particle
+  pool updated on the CPU and drawn in **one instanced call** (0.14 ms/frame when
+  full). Particles are camera-facing quads expanded in the vertex shader from the
+  camera's right/up vectors, with a soft round edge so smoke looks like smoke
+  rather than squares.
+
+  | Effect | Trigger |
+  |---|---|
+  | Explosion | crash — fireball + white-hot core + embers + black smoke + dust (411 particles) |
+  | Touchdown dust | wheels meet the runway, scaled by sink rate |
+  | Tyre smoke | heavy braking above 60 km/h |
+  | Black smoke | the burning wreck keeps smoking after a crash |
+  | Contrails | above 900 m and faster than 120 km/h |
+
+- **More scenery**, plus a river/road/field generator (`skyflight/linear.py`):
+
+  | Added | Notes |
+  |---|---|
+  | Rivers | traced **downhill** from high ground, 8-way steepest descent until they reach water; the ribbon is sampled at every corner so it follows the terrain |
+  | Country roads | each village linked to its nearest neighbour, with a bend so they are not straight lines |
+  | Farmland | fields around villages in four crop colours, snapped to the terrain |
+  | Wind farms, villages, rocks, mixed forest | already present, now denser |
+
+### Changed
+
+- **Fullscreen now explicitly disables the window decoration.**
+  `set_window_monitor` alone left a title bar on some Windows builds; the window
+  is now created and toggled with `DECORATED` off, so fullscreen is genuinely
+  borderless.
+- Scenery generation got **3× faster** (0.77 s → 0.25 s) after profiling: river
+  tracing, village placement and field placement were each issuing one terrain
+  query per point instead of one batched query. River tracing alone went from
+  0.389 s to 0.094 s.
+
+### Verified
+
+New suites: `tests/sound_check.py` (every waveform synthesises, loop seams are
+continuous, the mixer runs, silent fallback works), `tests/particles_check.py`
+(spawn, lifetime, pool overflow, instance format, per-frame cost) and
+`tests/fullscreen_border.py` (`DECORATED` off in fullscreen, restored on exit,
+native resolution, back buffer still renders). `tests/scenery_check.py` now also
+asserts rivers, roads and fields generate. Full suite green: 10/10 flight
+physics, aircraft check, spawn fit, i18n, HUD layout, keys, 4/4 end-to-end
+flight, smoke test.
+
+---
+
 ## v1.5.1 — 2026-10-03
 
 ### Fixed
