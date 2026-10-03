@@ -37,6 +37,7 @@ codes = [
     ('Q', glfw.KEY_Q), ('E', glfw.KEY_E), ('F', glfw.KEY_F), ('B', glfw.KEY_B),
     ('M', glfw.KEY_M), ('P', glfw.KEY_P), ('R', glfw.KEY_R), ('C', glfw.KEY_C),
     ('Z', glfw.KEY_Z), ('X', glfw.KEY_X), ('H', glfw.KEY_H),
+    ('G', glfw.KEY_G), ('V', glfw.KEY_V), ('L', glfw.KEY_L),
     ('UP', glfw.KEY_UP), ('DOWN', glfw.KEY_DOWN),
     ('LEFT', glfw.KEY_LEFT), ('RIGHT', glfw.KEY_RIGHT),
     ('LEFT_SHIFT', glfw.KEY_LEFT_SHIFT), ('RIGHT_SHIFT', glfw.KEY_RIGHT_SHIFT),
@@ -128,6 +129,42 @@ p0 = g.craft.pos.copy()
 press(g, glfw.KEY_R); g.update(dt); release(g, glfw.KEY_R)
 moved = np.linalg.norm(g.craft.pos - p0) > 100
 print('  R 重来 位置重置 %s  %s' % (moved, 'OK' if moved else '❌'))
+
+# V 换机型（飞行参数和模型都要跟着换）
+a0 = g.aircraft_key
+press(g, glfw.KEY_V); g.update(dt); release(g, glfw.KEY_V)
+a1 = g.aircraft_key
+print('  V 换机型 %s -> %s  %s' % (a0, a1, 'OK' if a1 != a0 else '❌'))
+
+# G 收起落架（要空速够；先把飞机放到空中）
+for _ in range(4):
+    press(g, glfw.KEY_V); g.update(dt); release(g, glfw.KEY_V)   # 保证是喷气机
+if g.craft.gear_retractable:
+    g.craft.pos = np.array([0.0, 1500.0, 0.0])
+    g.craft.on_ground = False
+    g.craft.speed_val = 120.0
+    g.craft.gear = 1.0
+    g.craft.gear_up_locked = False
+    g.craft.gear_down_locked = False
+    press(g, glfw.KEY_G); g.update(dt); release(g, glfw.KEY_G)
+    print('  G 收起落架 锁定收起 = %s  %s' % (
+        g.craft.gear_up_locked, 'OK' if g.craft.gear_up_locked else '❌'))
+    for _ in range(180):
+        g.update(dt)
+    print('     1.8 秒后 gear = %.2f  %s' % (
+        g.craft.gear, 'OK' if g.craft.gear < 0.01 else '❌'))
+else:
+    print('  G 收起落架 ❌ 当前机型不是可收放式（V 切换可能失败）')
+
+# L 中英界面切换
+from skyflight import i18n
+l0 = i18n.get_lang()
+press(g, glfw.KEY_L); g.update(dt); release(g, glfw.KEY_L)
+l1 = i18n.get_lang()
+print('  L 切换语言 %s -> %s  %s' % (l0, l1, 'OK' if l1 != l0 else '❌'))
+press(g, glfw.KEY_L); g.update(dt); release(g, glfw.KEY_L)
+print('     再按一次回到 %s  %s' % (i18n.get_lang(),
+      'OK' if i18n.get_lang() == l0 else '❌'))
 
 print()
 print('=== 7) 长按（方向键会产生 REPEAT 事件）===')

@@ -164,26 +164,27 @@ class Aircraft:
     def toggle_gear(self):
         """按 G：收起落架 / 放起落架
 
-        返回 (是否接受, 说明)。只有能安全动作时才执行：
+        返回 (是否接受, 提示文字的 i18n 键)。
+        只有能安全动作时才执行：
           - 固定式起落架：不接受
           - 地面上要收起：不接受（收起会擦地）
           - 空速低于 8 m/s 要收起：不接受
         要"放下"则任何时候都允许（进近时可能速度很低，但必须放得下来）。
         """
         if not self.spec.gear_retract:
-            return False, '固定式起落架，不能收放'
+            return False, 'msg.gear_fixed'
         want_up = self.gear > 0.5
         if want_up:
             if self.on_ground:
-                return False, '地面上不能收起落架'
+                return False, 'msg.gear_ground'
             if self.speed_val < 8.0:
-                return False, '速度太低（<29 km/h），不能收起落架'
+                return False, 'msg.gear_slow'
             self.gear_up_locked = True
             self.gear_down_locked = False
-            return True, '正在收起起落架'
+            return True, 'msg.gear_up_go'
         self.gear_down_locked = True
         self.gear_up_locked = False
-        return True, '正在放下起落架'
+        return True, 'msg.gear_down_go'
 
 
     # ------------------------------------------------ 坐标变换

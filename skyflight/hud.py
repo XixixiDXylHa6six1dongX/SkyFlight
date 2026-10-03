@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
 """
 屏幕叠加层（HUD）：空速、高度、升降率、油门、姿态仪、迎角、告警
-自带一套简单字形（用矩形拼字母/数字，不依赖字体库）
+
+文字分两套：
+  1. ASCII 用自带的 5x7 点阵（FONT 表，不依赖任何字体文件）
+  2. 中文（以及其它非 ASCII）按需用系统字体（微软雅黑等）光栅化成
+     同样的点阵格式并缓存 —— 所以 HUD 不需要预存上千个汉字字形
 """
 import math
 
@@ -9,7 +13,151 @@ import numpy as np
 from OpenGL import GL
 
 from . import gfx
+from . import i18n
 from .version import VERSION
+
+# ================================================================
+# 中文（及其它非 ASCII）字形：用系统字体现场光栅化
+# 找不到字体时退化成空心方块占位，HUD 不会崩
+# ================================================================
+_CJK_PIX_MAX = 30             # 光栅化方格最大边长（像素）
+_CJK_MIN_SIZE = 11            # 小于这个字号就不渲染汉字了（糊得认不出）
+_CJK_ROWS_FACTOR = 1.3        # 汉字行数 = 字号 * 这个系数（比 ASCII 细，视觉高度才一致）
+_CJK_CACHE = {}
+_CJK_FONT = None
+_CJK_FONT_PATH = None
+_CJK_TRIED = False
+
+_CJK_FONT_PATHS = [
+    r'C:\Windows\Fonts\msyh.ttc',      # 微软雅黑
+    r'C:\Windows\Fonts\msyhbd.ttc',
+    r'C:\Windows\Fonts\simhei.ttf',    # 黑体
+    r'C:\Windows\Fonts\Deng.ttf',      # 等线
+    r'C:\Windows\Fonts\simsun.ttc',    # 宋体
+    '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+    '/System/Library/Fonts/PingFang.ttc',
+]
+
+
+def _load_cjk_font():
+    """找到一个能显示中文的字体文件（只找一次）
+
+    注意：这里只确认"有哪些字体可用"，真正光栅化时会按目标字号
+    重新建 ImageFont 对象（见 cjk_glyph）。
+    """
+    global _CJK_FONT, _CJK_FONT_PATH, _CJK_TRIED
+    if _CJK_TRIED:
+        return _CJK_FONT
+    _CJK_TRIED = True
+    try:
+        from PIL import ImageFont
+    except Exception:
+        return None
+    for p in _CJK_FONT_PATHS:
+        try:
+            import os
+            if not os.path.exists(p):
+                continue
+            _CJK_FONT = ImageFont.truetype(p, 24)
+            _CJK_FONT_PATH = p
+            return _CJK_FONT
+        except Exception:
+            continue
+    return None
+
+
+def warm_font(chars=None):
+    """预先生成一批字形（在启动时调用，避免游戏中第一次显示时卡顿）
+
+    HUD 里的汉字会出现在 15 / 17 / 19 / 21 几种字号上，
+    这里每种都预生成一遍。字形按 (字符, 字号) 缓存。
+    """
+    _load_cjk_font()
+    sizes = (15, 17, 19, 21)
+    for ch in (chars if chars is not None else i18n.hud_characters()):
+        if ord(ch) > 127:
+            for s in sizes:
+                cjk_glyph(ch, s)
+    return len(_CJK_CACHE)
+
+
+def cjk_glyph(ch, size):
+    """把非 ASCII 字符按**目标字号**光栅化成点阵（结果按字号缓存）
+
+    返回 (rows, width)：rows 是 '#'/'.' 字符串列表，width 是列数。
+
+    为什么必须按字号光栅化：
+      汉字笔画密度远高于拉丁字母。如果先按固定大尺寸光栅化、再缩到
+      HUD 的 13~15 px，笔画会糊成一坨（实测"帧率"会糊成"帧字"）。
+      所以这里按实际显示尺寸算，笔画才分得开。
+    尺寸很小（< _CJK_MIN_SIZE）时干脆返回 None，让调用方跳过 —— 画出来
+    也只是一团墨点，不如不画。
+    """
+    key = (ch, size)
+    if key in _CJK_CACHE:
+        return _CJK_CACHE[key]
+    _load_cjk_font()
+    pat = None
+    if size < _CJK_MIN_SIZE:
+        _CJK_CACHE[key] = None
+        return None
+    if _CJK_FONT is not None:
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+            R = max(7, int(round(size * _CJK_ROWS_FACTOR)))
+            # 字号越小，笔画相对越粗，容易出现"横竖不分"。
+            # 所以小字号额外再加行数（点阵更细），大字号保持 1.3 就够。
+            if size < 15:
+                R = max(R, int(round(size * 2.0)))
+            # 高分辨率画布：约 2.5 倍行数就够，再大只是浪费（缩小时会平均掉）
+            n = max(20, int(R * 2.5))
+            font = ImageFont.truetype(_CJK_FONT_PATH, int(n * 0.82))
+            img = Image.new('L', (n, n), 0)
+            ImageDraw.Draw(img).text((0, 0), ch, fill=255, font=font)
+            px = img.load()
+            xs = [x for x in range(n) for y in range(n) if px[x, y] > 90]
+            ys = [y for x in range(n) for y in range(n) if px[x, y] > 90]
+            if not xs:
+                pat = (['.'], 1)
+            else:
+                x0, x1 = min(xs), max(xs)
+                y0, y1 = min(ys), max(ys)
+                w = max(1, x1 - x0 + 1)
+                h = max(1, y1 - y0 + 1)
+                cols = max(2, int(round(w * R * 0.72 / float(h))))
+                # 用覆盖率把高分辨率图缩到 R 行 cols 列：
+                # 每个格子看平均亮度，超过阈值就算实心 —— 比点采样稳定得多
+                rows = []
+                for r in range(R):
+                    ya = y0 + int(r * h / R)
+                    yb = y0 + max(ya - y0 + 1, int((r + 1) * h / R))
+                    line = ''
+                    for c in range(cols):
+                        xa = x0 + int(c * w / cols)
+                        xb = x0 + max(xa - x0 + 1, int((c + 1) * w / cols))
+                        tot = 0
+                        cnt = 0
+                        for yy in range(ya, min(yb, n)):
+                            for xx in range(xa, min(xb, n)):
+                                tot += px[xx, yy]
+                                cnt += 1
+                        line += '#' if cnt and (tot / float(cnt)) > 105 else '.'
+                    rows.append(line)
+                pat = (rows, cols)
+        except Exception:
+            pat = None
+    if pat is None:
+        # 没有字体时画个空心方块占位，至少能看出"这里有个字"
+        pat = (['#####', '#...#', '#...#', '#...#', '#####'], 5)
+    _CJK_CACHE[key] = pat
+    return pat
+
+
+def font_ready():
+    """系统字体是否可用（不可用时中文会显示成方块）"""
+    _load_cjk_font()
+    return _CJK_FONT is not None
+
 
 # ================================================================
 # 字形：5x7 点阵，每个字符用 7 行 5 列的字符串表示
@@ -125,7 +273,28 @@ class Hud:
         """画一个字符。size = 字符高度（像素）"""
         pat = FONT.get(ch.upper())
         if pat is None:
-            return size * 0.6
+            # 非 ASCII（中文等）：走系统字体光栅化那条路。
+            # 字号必须传进去 —— 中文要按实际显示尺寸光栅化才清晰。
+            pat2 = cjk_glyph(ch, int(round(size)))
+            if pat2 is None:
+                return 0.0     # 字号太小，画出来只是墨点，跳过
+            rows, gwidth = pat2
+            gh = len(rows)
+            pw = size / float(gh)
+            for row in range(gh):
+                line = rows[row]
+                col = 0
+                while col < gwidth:
+                    if line[col] == '#':
+                        run = 1
+                        while col + run < gwidth and line[col + run] == '#':
+                            run += 1
+                        self.rect(x + col * pw, y + row * pw,
+                                  run * pw + 0.6, pw + 0.7, color)
+                        col += run
+                    else:
+                        col += 1
+            return gwidth * pw
         pw = size / float(CHAR_H)          # 每个点阵像素的边长
         for row in range(CHAR_H):
             line = pat[row]
@@ -219,12 +388,16 @@ BG = (0.06, 0.09, 0.13, 0.5)
 
 
 def _panel(hud, x, y, w, h, label, value, unit, vcol=WHITE, bar=None):
-    """画一个数据面板：标签 + 数值 + 单位（+ 可选进度条）"""
+    """画一个数据面板：标签 + 数值 + 单位（+ 可选进度条）
+
+    中文标签需要更大的字号才清晰（拉丁字母 5x7 点阵在 15px 下很清楚，
+    汉字笔画多，同样的高度会糊），所以中文时标签字号乘一个系数。
+    """
     hud.rect(x, y, w, h, BG)
-    ts = h * 0.21
+    ts = h * 0.21 * (1.35 if i18n.is_zh() else 1.0)
     vs = h * 0.36
-    hud.text(label, x + 10, y + 4, ts, DIM)
-    hud.text(value, x + 10, y + h * 0.31, vs, vcol)
+    hud.text(label, x + 10, y + 3, ts, DIM)
+    hud.text(value, x + 10, y + h * 0.34, vs, vcol)
     if unit:
         uw = hud.text_width(unit, ts)
         hud.text(unit, x + w - uw - 10, y + h * 0.60, ts, DIM)
@@ -251,8 +424,10 @@ def _compass(hud, craft, screen_w, pad):
     hud.rect(cleft, top, cw, ch, BG)
 
     marks = [
-        (0, 'N'), (45, 'NE'), (90, 'E'), (135, 'SE'),
-        (180, 'S'), (225, 'SW'), (270, 'W'), (315, 'NW'),
+        (0, i18n.t('compass.n')), (45, i18n.t('compass.ne')),
+        (90, i18n.t('compass.e')), (135, i18n.t('compass.se')),
+        (180, i18n.t('compass.s')), (225, i18n.t('compass.sw')),
+        (270, i18n.t('compass.w')), (315, i18n.t('compass.nw')),
     ]
     px_per_deg = cw / 120.0          # 视野里显示 ±60°
     mid = cleft + cw * 0.5
@@ -277,26 +452,31 @@ def draw_hud(hud, shader, craft, screen_w, screen_h, fps=0.0):
     pad = 16.0
     pw = min(230.0, screen_w * 0.20)      # 面板宽
     ph = max(62.0, screen_h * 0.112)      # 面板高
+    zh = i18n.is_zh()
 
     # ---------------- 左下：空速 / 高度
     y0 = screen_h - pad - ph * 2 - 8
-    _panel(hud, pad, y0, pw, ph, 'SPD', '%d' % craft.airspeed_kmh, 'KM/H')
-    _panel(hud, pad, y0 + ph + 8, pw, ph, 'ALT', '%d' % craft.altitude, 'M')
+    _panel(hud, pad, y0, pw, ph, i18n.t('hud.spd'), '%d' % craft.airspeed_kmh, 'KM/H')
+    _panel(hud, pad, y0 + ph + 8, pw, ph, i18n.t('hud.alt'), '%d' % craft.altitude, 'M')
 
     # ---------------- 右下：油门 / 升降率
     xr = screen_w - pad - pw
-    _panel(hud, xr, y0, pw, ph, 'THR', '%d' % int(craft.throttle * 100), '%',
+    _panel(hud, xr, y0, pw, ph, i18n.t('hud.thr'),
+           '%d' % int(craft.throttle * 100), '%',
            vcol=GREEN if craft.throttle > 0.05 else DIM, bar=craft.throttle)
     vs_ = craft.vertical_speed
     vcol = GREEN if vs_ > 1.0 else (AMBER if vs_ < -1.0 else WHITE)
-    _panel(hud, xr, y0 + ph + 8, pw, ph, 'V/S', '%+.0f' % vs_, 'M/S', vcol=vcol)
+    _panel(hud, xr, y0 + ph + 8, pw, ph, i18n.t('hud.vs'), '%+.0f' % vs_, 'M/S', vcol=vcol)
 
     # ---------------- 油门面板上方：减速板 / 襟翼状态
     st_y = y0 - 24.0
+    stx = xr + 4
     if getattr(craft, 'airbrake', 0.0) > 0.05:
-        hud.text('BRAKE', xr + 4, st_y, 15, AMBER)
+        bt = i18n.t('hud.brake')
+        hud.text(bt, stx, st_y, 15, AMBER)
+        stx += hud.text_width(bt, 15) + 12
     if abs(getattr(craft, 'flaps', 0.0)) > 0.05:
-        hud.text('FLAPS', xr + 76, st_y, 15, CYAN)
+        hud.text(i18n.t('hud.flaps'), stx, st_y, 15, CYAN)
 
     # ---------------- 顶部中间：姿态仪（往下让出罗盘的位置）
     aw, ah = 210.0, 76.0
@@ -320,23 +500,27 @@ def draw_hud(hud, shader, craft, screen_w, screen_h, fps=0.0):
     aoa = craft.aoa_deg
     acol = RED if craft.stalling else (AMBER if abs(aoa) > 12 else WHITE)
     ty = ay + ah + 6
-    hud.text('AOA %+.1f' % aoa, cx - 58, ty, 17, acol)
+    aoa_txt = '%s %+.1f' % (i18n.t('hud.aoa'), aoa)
+    hud.text(aoa_txt, cx - hud.text_width(aoa_txt, 17) * 0.5, ty, 17, acol)
+    g_txt = '%s %.1f' % (i18n.t('hud.gload'), craft.g_load)
     gcol = RED if craft.g_load > 3.0 else WHITE
-    hud.text('G %.1f' % craft.g_load, cx - 26, ty + 20, 17, gcol)
+    hud.text(g_txt, cx - hud.text_width(g_txt, 17) * 0.5, ty + 20, 17, gcol)
 
     # ---------------- 告警（再往下）
     warns = []
     if craft.crashed:
-        warns.append(('CRASHED  PRESS R', RED))
+        warns.append((i18n.t('warn.crashed'), RED))
     elif craft.stalling:
-        warns.append(('STALL', RED))
+        warns.append((i18n.t('warn.stall'), RED))
     if not craft.crashed:
         if craft.altitude < 120 and craft.vertical_speed < -8:
-            warns.append(('PULL UP', RED))
+            warns.append((i18n.t('warn.pullup'), RED))
         if craft.throttle < 0.05 and craft.altitude > 200:
-            warns.append(('LOW POWER', AMBER))
+            warns.append((i18n.t('warn.lowpower'), AMBER))
         if abs(craft.aoa_deg) > 14 and not craft.stalling:
-            warns.append(('HIGH AOA', AMBER))
+            warns.append((i18n.t('warn.highaoa'), AMBER))
+    if getattr(craft, 'paused', False):
+        warns.append((i18n.t('warn.paused'), WHITE))
 
     ts = 17.0
     wy = ty + 44
@@ -347,23 +531,30 @@ def draw_hud(hud, shader, craft, screen_w, screen_h, fps=0.0):
         hud.text(txt, cx - tw * 0.5, wy, ts, col)
         wy += ts * 1.9
 
-    # ---------------- 右上：FPS
-    hud.text('FPS %d' % int(fps), screen_w - pad - 100, pad + 4, 17, DIM)
+    # ---------------- 右上：FPS（带底衬，亮天空下也看得清）
+    fps_txt = i18n.t('hud.fps', n=int(fps))
+    fw = hud.text_width(fps_txt, 17)
+    hud.rect(screen_w - pad - fw - 8, pad, fw + 8, 24, BG)
+    hud.text(fps_txt, screen_w - pad - fw - 4, pad + 4, 17,
+             (0.82, 0.86, 0.92, 1.0))
 
     # ---------------- 左上角：游戏名 / 版本号 + 机型 / 起落架状态
     # 排版用实测文字宽度累加，不要再手写 x 偏移（之前把机型名写死在
     # pad+62，而 "V1.4.0" 实际有 90.5 px 宽，两段就叠在一起了）。
     lx = pad + 2
-    hud.text('SKYFLIGHT', lx, pad + 2, 20, WHITE)
+    hud.text(i18n.t('hud.title'), lx, pad + 2, 20, WHITE)
 
     ny = pad + 30
-    vtxt = 'V%s' % VERSION
+    if i18n.is_zh():
+        vtxt = '%s %s' % (i18n.t('hud.version'), VERSION)
+    else:
+        vtxt = 'V%s' % VERSION
     hud.text(vtxt, lx, ny, 16, DIM)
     vw = hud.text_width(vtxt, 16)
 
     sp = getattr(craft, 'spec', None)
     if sp is not None:
-        name = sp.name_en.upper()
+        name = sp.name if i18n.is_zh() else sp.name_en.upper()
         hud.text(name, lx + vw + 14, ny, 16,
                  CYAN if sp.kind == 'jet' else WHITE)
 
@@ -374,23 +565,25 @@ def draw_hud(hud, shader, craft, screen_w, screen_h, fps=0.0):
         if sp.gear_retract:
             g = craft.gear
             if g > 0.99:
-                lines.append(('GEAR DOWN', GREEN))
+                lines.append((i18n.t('hud.gear_down'), GREEN))
             elif g < 0.01:
-                lines.append(('GEAR UP', CYAN))
+                lines.append((i18n.t('hud.gear_up'), CYAN))
             else:
-                lines.append(('GEAR %d%%' % int(g * 100), AMBER))
+                lines.append((i18n.t('hud.gear_moving', n=int(g * 100)), AMBER))
         else:
-            lines.append(('GEAR FIXED', DIM))
-        if sp.kind == 'jet':
-            lines.append(('TURBOJET', DIM))
-        else:
-            lines.append(('PISTON', DIM))
+            lines.append((i18n.t('hud.gear_fixed'), DIM))
+        lines.append((i18n.t('hud.engine_jet') if sp.kind == 'jet'
+                      else i18n.t('hud.engine_piston'), DIM))
 
-        # 底板尺寸按最长那行算
-        bw = max(hud.text_width(t, 15) for t, _ in lines) + 16
-        bh = 17 * len(lines) + 10
+        # 底板尺寸按最长那行算。汉字需要更大的绘制字号才清晰
+        # （点阵化后笔画密度高，字号太小会糊成一团）
+        zh = i18n.is_zh()
+        ts = 19.0 if zh else 15.0
+        lh = 22.0 if zh else 17.0
+        bw = max(hud.text_width(t, ts) for t, _ in lines) + 16
+        bh = lh * len(lines) + 10
         hud.rect(lx - 3, iy - 4, bw, bh, BG)
         for i, (t, col) in enumerate(lines):
-            hud.text(t, lx + 5, iy + i * 17, 15, col)
+            hud.text(t, lx + 5, iy + i * lh, ts, col)
 
     hud.commit(screen_w, screen_h, shader)

@@ -1,5 +1,60 @@
 # Changelog
 
+## v1.5.0 — 2026-10-03
+
+### Added
+
+- **Switchable interface language (Chinese / English).** Press **L** at any
+  time. Everything switches: the instrument panel, the compass, all warnings,
+  the window title, the console help text and the aircraft names. Default is
+  Chinese; `--lang=en` on the command line starts in English.
+
+  The HUD previously had only a 5x7 ASCII bitmap font, so Chinese could not be
+  drawn at all. Non-ASCII characters are now rasterised on demand from a system
+  font (Microsoft YaHei / SimHei / Noto Sans CJK, whichever is present) into the
+  same bitmap format and cached — so the HUD still needs no font file and no
+  pre-baked glyph table. Glyphs are rasterised **at the size they will be
+  drawn** and cached per (character, size) — scaling one large bitmap down to
+  13-15 px smeared the strokes together (the FPS label rendered as garbage).
+  Small sizes get extra rows because CJK strokes are relatively thicker there.
+  Below 11 px Chinese is skipped entirely rather than drawn as an ink blob. If
+  no CJK font exists the HUD falls back to outline boxes instead of crashing.
+
+- **Much richer scenery** (`skyflight/props.py` is new):
+
+  | Added | Notes |
+  |---|---|
+  | Mixed forest | conifers *and* broadleaf trees; the conifer share rises with altitude, so low ground is leafy and high ground dark green |
+  | Forest patches | density is driven by a large-scale noise field, giving real woodland edges and open meadows instead of uniform scatter |
+  | Villages | houses, barns, warehouses, hangars, churches (with spires) and water towers, placed as clusters rather than scattered |
+  | Wind farms | 3-blade turbines on ridges and plateaus — **the rotors turn** |
+  | Rocks | boulders on steep slopes and at altitude |
+
+  Trees are also 35 % larger and roughly twice as dense, the tree grid went from
+  52 m to 40 m, and the "keep clear of the airport" radius dropped from 900 m to
+  520 m, so the forest now starts right beside the runway instead of leaving a
+  bare plain.
+
+### Fixed
+
+- **`FPS` and `GEAR nn%` rendered as literal placeholders.** The translated
+  strings used `%d` with a named keyword argument. `i18n.t()` now accepts both
+  styles (`%s`/`%d` positionally, `{name}` by keyword).
+- **Nothing grows on the runway** or in the airport core, and nothing is placed
+  in water — all three are now asserted by `tests/scenery_check.py` against every
+  generated instance rather than a sample.
+
+### Verified
+
+New suites: `tests/i18n_check.py` (both string tables must have identical keys,
+every entry must resolve without leftover placeholders, Chinese glyphs must
+contain real strokes) and `tests/scenery_check.py` (density, determinism,
+runway/water clearance, prop geometry, rotor rotation). Plus the existing suite:
+10/10 flight physics, aircraft check, spawn check, key bindings (now covering
+G / V / L), 4/4 end-to-end flight, smoke test, HUD layout, fullscreen.
+
+---
+
 ## v1.4.1 — 2026-10-03
 
 ### Fixed

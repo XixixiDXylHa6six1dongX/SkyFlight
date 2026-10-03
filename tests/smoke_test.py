@@ -247,8 +247,16 @@ def t_gl():
 
     sc = scenery.Scenery(radius=1600.0, cell=52.0)
     sc.update((0.0, 0.0))
-    print('     地景生成：树 %d 棵，房屋 %d 座' % (sc.tree_count, sc.houses_count))
+    print('     地景生成：针叶树 %d 棵，阔叶树 %d 棵' % (
+        sc.conifer_count, sc.broadleaf_count))
+    print('     村庄建筑：%s' % {k: v for k, v in sc.village_stats.items() if v})
+    print('     山顶风机：%d 台' % sc.turbine_count)
     sc.upload()
+    # 道具网格都要能建成
+    n_props = sc.total_props()
+    print('     道具实例合计：%d 个' % n_props)
+    assert sc.conifer_count + sc.broadleaf_count > 200, '树太少'
+    assert n_props > 0, '一个道具都没生成'
     wt = scenery.Water(radius=6000.0, segments=48)
     wt.update((0.0, 0.0))
     wt.upload()

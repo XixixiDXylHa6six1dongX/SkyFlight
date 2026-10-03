@@ -11,7 +11,8 @@ import glfw
 import numpy as np
 from OpenGL import GL
 
-from . import gfx, shaders, sky, terrain, flight, plane, scenery, specs, hud as hudmod
+from . import (gfx, shaders, sky, terrain, flight, plane, scenery, specs,
+               i18n, hud as hudmod)
 from .version import VERSION, BUILD_DATE
 
 
@@ -229,8 +230,8 @@ class SkyFlightApp:
         self.plane_mesh, self.gear_mesh = plane.build_plane(key)
         self.shadow_mesh = plane.build_shadow(key)
         self._place_on_runway()
-        print('  [机型] 已切换到 %s  (%s)' % (
-            self.craft.spec.name, self.craft.spec.name_en))
+        print('  [aircraft] %s' % (i18n.t('msg.aircraft') % (
+            self.craft.spec.name, self.craft.spec.name_en)))
 
     def next_aircraft(self):
         self.set_aircraft(specs.next_key(self.aircraft_key))
@@ -283,7 +284,7 @@ class SkyFlightApp:
         # 双层地形：近处细、远处大范围
         self.terrain_patch = terrain.Terrain()
         # 成片地景：森林 + 湖面 + 路边房屋
-        self.scenery = scenery.Scenery(radius=2600.0, cell=52.0)
+        self.scenery = scenery.Scenery(radius=2600.0, cell=40.0)
         self.water = scenery.Water(radius=16000.0, segments=72)
         self.scenery_pending = True      # 首帧立即生成一次
 
@@ -355,10 +356,14 @@ class SkyFlightApp:
         elif n == 'V':
             # 换机型
             self.next_aircraft()
+        elif n == 'L':
+            # 中英文界面切换
+            self.toggle_language()
         elif n == 'G':
             # 收起落架 / 放起落架（安全检查放在 Aircraft.toggle_gear 里）
-            accepted, msg = self.craft.toggle_gear()
-            print('  [起落架] %s' % msg)
+            # toggle_gear 返回的是 i18n 键，这里再翻译成当前语言
+            accepted, msg_key = self.craft.toggle_gear()
+            print('  [gear] %s' % i18n.t(msg_key))
         elif n == 'R':
             # 重来：回到跑道起点，停住
             if SPAWN_ON_RUNWAY:
@@ -436,6 +441,8 @@ class SkyFlightApp:
             # 生成好的实例数据在这里上传到显卡（必须在 GL 上下文里）
             self.scenery.upload()
             self.water.upload()
+            # 风机叶轮转动等动画
+            self.scenery.update_animation(dt)
 
     def draw(self):
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
@@ -515,10 +522,11 @@ class SkyFlightApp:
             GL.glDepthMask(GL.GL_TRUE)
             GL.glDisable(GL.GL_BLEND)
 
-            # ---------- 森林 + 房屋（实例化一次画完）
+            # ---------- 森林 + 村庄 + 石头 + 风机塔（实例化一次画完）
             self.inst_shader.use()
             self.scenery.draw_trees(self.inst_shader)
-            self.scenery.draw_houses(self.inst_shader)
+            self.scenery.draw_props(self.inst_shader)
+            self.scenery.draw_turbines(self.inst_shader)
 
         # ---------- 物体
         self.obj_shader.use()
@@ -595,15 +603,34 @@ class SkyFlightApp:
                 self.show_hud = False
 
     # ------------------------------------------------ 运行
+    def _print_banner(self, glyph_count=0):
+        """启动横幅 + 操作说明（按当前语言）"""
+        print('=' * 68)
+        print('  %s   v%s   (%s)' % (APP_NAME, VERSION, BUILD_DATE))
+        if not hudmod.font_ready():
+            print('  [i18n] 系统里没找到中文字体，HUD 的中文会显示成方块')
+        print('=' * 68)
+        print(self.help_text())
+        print('  %s   (L = 中/英 / language)' % i18n.LANG_NAMES[i18n.get_lang()])
+        print()
+
+    def toggle_language(self):
+        """L 键：中英界面切换"""
+        lang = i18n.toggle_lang()
+        print('  [i18n] %s' % (i18n.t('msg.lang') % i18n.LANG_NAMES[lang]))
+        # 切换后立刻刷新标题和帮助信息
+        glfw.set_window_title(self.window, self.title_text())
+        print(self.help_text())
+
     def run(self):
         self.init_gl()
-        print('=' * 64)
-        print('  %s   v%s   (%s)' % (APP_NAME, VERSION, BUILD_DATE))
-        print('=' * 64)
-        print(self.help_text())
-        print()
-        print('  提示：按 F11 可以全屏，再按一次回到窗口')
-        print()
+        # 界面语言：命令行 --lang=en / --lang=zh 可以覆盖默认值
+        for a in sys.argv[1:]:
+            if a.startswith('--lang='):
+                i18n.set_lang(a.split('=', 1)[1])
+        # 预生成 HUD 用得到的汉字字形（避免游戏中第一次显示时卡顿）
+        n = hudmod.warm_font()
+        self._print_banner(n)
         while not glfw.window_should_close(self.window):
             now = time.time()
             dt = now - self.last_time
@@ -634,63 +661,72 @@ class SkyFlightApp:
 
     def title_text(self):
         c = self.craft
-        mode = ['驾驶舱', '追尾', '环绕'][self.camera.mode]
+        mode = [i18n.t('cam.cockpit'), i18n.t('cam.chase'), i18n.t('cam.orbit')][
+            self.camera.mode]
         flag = ''
         if c.stalling:
-            flag = '  ⚠失速'
+            flag = i18n.t('title.stall')
         if c.crashed:
-            flag = '  ✖坠毁(按R重来)'
+            flag = i18n.t('title.crashed')
         if self.paused:
-            flag += '  ‖暂停'
+            flag += '  ||' + i18n.t('warn.paused')
         if self.fullscreen:
-            flag += '  [全屏 F11 退出]'
+            flag += i18n.t('title.fullscreen')
         head = math.degrees(c.yaw) % 360.0
         gear = ''
         if c.spec.gear_retract:
-            gear = '  |  起落架 %s' % (
-                '放下' if c.gear > 0.99 else ('收起' if c.gear < 0.01
-                                          else '%d%%' % int(c.gear * 100)))
-        return ('%s v%s  [%s]  |  %s  |  航向 %03d°  |  速度 %.0f km/h  |  高度 %.0f m  |  '
-                '倾角 %+.0f°  |  油门 %.0f%%%s  |  FPS %.0f%s'
-                % (APP_NAME, VERSION, c.spec.name, mode, int(head),
-                   c.airspeed_kmh, c.altitude,
-                   math.degrees(c.roll), c.throttle * 100.0, gear, self.fps, flag))
+            gtxt = (i18n.t('title.gear_down') if c.gear > 0.99
+                    else (i18n.t('title.gear_up') if c.gear < 0.01
+                          else '%d%%' % int(c.gear * 100)))
+            gear = i18n.t('title.gear') % gtxt
+        ac_name = c.spec.name if i18n.is_zh() else c.spec.name_en
+        return i18n.t('title.format') % (
+            APP_NAME, VERSION, ac_name, mode, int(head),
+            c.airspeed_kmh, c.altitude, math.degrees(c.roll),
+            c.throttle * 100.0, gear, self.fps, flag)
     def help_text(self):
-        return """操作说明
---------------------------------------------------------------------
-  【俯仰】S 或 ↓ = 拉杆抬头      W 或 ↑ = 推杆低头
-  【滚转】D 或 → = 向右倾        A 或 ← = 向左倾
-  【偏航】E = 右舵               Q = 左舵
-  【油门】Shift = 加大           Ctrl = 减小
-  【快速】Z = 油门加满           X = 油门收光
-  【系统】F = 襟翼    B = 刹车/减速板    C = 切视角
-          G = 收起落架 / 放起落架（喷气机用）
-          V = 换机型（螺旋桨教练机 → 轻型涡喷 → 双发涡喷）
-          M = 鼠标操纵    P = 暂停
-          R = 重来（回跑道）
-          F11 或 Alt+回车 = 全屏 / 退出全屏
-          H = 隐藏/显示本说明    Esc = 退出
---------------------------------------------------------------------
-  【起飞】按 Z 加满油门 → 速度到约 100 km/h → 按住 S 抬前轮
-          → 俯仰到 12~15° 时松杆 → 飞机会自己离地
-          （喷气机推力大，抬前轮更快，注意别拉太猛）
-  【平飞】松杆就行，飞机会自动配平；需要调节时轻点 S / W
-  【转弯】按住 D 或 A，最多约 60° 倾角；松杆 2 秒自动回正
-  【起落架】离地后按 G 收起落架，速度能快一截、也更省油；
-          降落前务必再按 G 放下来（没放下就接地会擦地）
-  【减速】按住 B 打开减速板（空中也管用）；配合 F 放襟翼减得更快
-  【加速】俯冲（推杆 W）会掉高度但速度涨；要收速度就拉平 + 开减速板
-  【降落】对准跑道 → 油门收到 20% → F 放襟翼 → 按 G 放起落架
-          → 轻拉杆让下降率变缓
-  【告警】屏幕下方出现 STALL 表示失速，立刻推杆（W）并加油门
---------------------------------------------------------------------
-  三种机型（按 V 切换）：
-    螺旋桨教练机  低速好飞，固定起落架，适合练手
-    轻型涡喷      单发，可收起落架，爬升和加速都快
-    双发涡喷      机身重、翼载高，速度快但转弯半径大
---------------------------------------------------------------------
-  在"环绕"视角下（按 C 切换到第 3 个），按住鼠标右键拖动可转视角
-"""
+        """操作说明。所有文字都从 i18n 取，按 L 可以中英切换"""
+        c = self.craft
+        L = [
+            i18n.t('help.title'),
+            '-' * 68,
+            i18n.t('help.pitch'),
+            i18n.t('help.roll'),
+            i18n.t('help.yaw'),
+            i18n.t('help.throttle'),
+            i18n.t('help.quick'),
+            i18n.t('help.sys1'),
+            i18n.t('help.sys2'),
+            i18n.t('help.sys3'),
+            i18n.t('help.sys4'),
+            i18n.t('help.sys5'),
+            i18n.t('help.sys6'),
+            i18n.t('help.sys7'),
+            '-' * 68,
+            i18n.t('help.takeoff'),
+            i18n.t('help.takeoff2'),
+            i18n.t('help.takeoff3'),
+            i18n.t('help.level'),
+            i18n.t('help.turn'),
+            i18n.t('help.gear'),
+            i18n.t('help.gear2'),
+            i18n.t('help.slow'),
+            i18n.t('help.accel'),
+            i18n.t('help.land'),
+            i18n.t('help.land2'),
+            i18n.t('help.warn'),
+            '-' * 68,
+            i18n.t('help.types'),
+            i18n.t('help.type1'),
+            i18n.t('help.type2'),
+            i18n.t('help.type3'),
+            '-' * 68,
+            i18n.t('help.cam'),
+            i18n.t('help.lang'),
+            '',
+            '  当前机型 / current aircraft: %s (%s)' % (c.spec.name, c.spec.name_en),
+        ]
+        return '\n'.join(L) + '\n'
 
 
 def main():

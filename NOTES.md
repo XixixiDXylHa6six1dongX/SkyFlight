@@ -10,10 +10,12 @@ skyflight/
   app.py        window, render loop, cameras, input
   flight.py     flight dynamics (angle-of-attack state model)
   specs.py      aircraft specification table (geometry + performance)
+  props.py      static scenery geometry (buildings, rocks, wind turbines)
+  i18n.py       Chinese / English interface strings
   terrain.py    procedural terrain (fractal noise, two layers)
-  scenery.py    forests, lakes, houses
   sky.py        sky and cloud shader
   plane.py      geometry for the 3 airframes / runway / tower / hangar
+  scenery.py    forests, villages, rocks, turbines, lakes
   hud.py        instruments (5x7 bitmap font + attitude indicator + compass)
   gfx.py        OpenGL helpers (shaders, meshes, matrices, instancing)
   shaders.py    object, terrain, instanced and water shaders
@@ -28,6 +30,8 @@ Built with Python 3.12 + PyOpenGL + GLFW. The bundled interpreter is in
 ```
 runtime\python.exe tests\flight_check.py     # 10 flight-physics checks
 runtime\python.exe tests\aircraft_check.py   # 3 airframes: geometry, performance, gear
+runtime\python.exe tests\i18n_check.py       # zh/en tables match, glyphs have strokes
+runtime\python.exe tests\scenery_check.py    # density, determinism, clearance, rotors
 runtime\python.exe tests\smoke_test.py       # terrain / physics / geometry / GL
 runtime\python.exe tests\full_flight.py      # takeoff -> climb -> cruise -> turn
 runtime\python.exe tests\keytest.py          # every key binding, simulated
@@ -114,3 +118,25 @@ runtime\python.exe tests\auto_smoke.py       # opens a window for 150 frames
     nav light placed at `x = ±13` made the twin jet measure a 26 m span
     against a declared 15.6 m. `tests/aircraft_check.py` now measures every
     model and fails on any mismatch.
+13. **Do not scale one large CJK bitmap down to HUD size.** The first version of
+    the Chinese HUD font rasterised every character once at a fixed 28 px and
+    then squeezed it into the 13-19 px the HUD actually uses. Averaging that
+    many strokes down turned them into solid slabs — the FPS label read as
+    garbage, and the user noticed immediately. Rasterise **per (character,
+    size)** and cache on that pair. Small sizes need proportionally more rows
+    (a 13 px glyph gets 26 rows, not 17) because CJK strokes are thicker
+    relative to the em box at small sizes.
+
+14. **`str` formatting in a translation table cuts both ways.** `i18n.t()` has
+    to support `%s`/`%d` (positional) *and* `{name}` (keyword), because the
+    strings that survived from earlier used `%`, while the new ones prefer
+    `{n}`. Mixing them up silently ships a literal `%d` to the screen — which
+    is exactly what happened to `FPS %d` and `GEAR %d%%`.
+
+15. **Scenery hiding behind a filter is invisible, not absent.** The wind
+    turbines generated zero for a long time and looked like a code bug. The
+    real cause was arithmetic: the terrain's median slope is 1.46, and
+    "height > 420 m AND slope < 0.34" matched only ~2.9 % of the map, which a
+    420 m sampling grid then usually missed entirely. When a placement rule
+    yields nothing, print the terrain statistics it is filtering on before
+    touching the rule.
