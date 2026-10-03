@@ -69,6 +69,48 @@ for sp in specs.CATALOG:
     g.craft.gear = 1.0
     glfw.terminate()
 
+# ---------- 关键回归：draw() 必须真的把 HUD 画出来
+# 这里的教训：加新绘制代码时很容易把 draw() 末尾的仪表盘那段覆盖掉，
+# 而且**不会报任何错** —— 界面就那么安静地消失了（v1.6.0 真实发生过）。
+print()
+print('  draw() 是否真的调用了仪表盘（防止再次被覆盖）:')
+import inspect
+g = appmod.SkyFlightApp()
+g.init_gl()
+
+# 用 AST 静态检查：draw 函数体里必须出现 draw_hud 调用
+import ast
+import textwrap
+src = inspect.getsource(type(g).draw)
+tree = ast.parse(textwrap.dedent(src))
+found_call = False
+for node in ast.walk(tree):
+    if isinstance(node, ast.Call):
+        f = node.func
+        name = ''
+        if isinstance(f, ast.Attribute):
+            name = f.attr
+        elif isinstance(f, ast.Name):
+            name = f.id
+        if name == 'draw_hud':
+            found_call = True
+check('draw() 源码里有 draw_hud 调用', found_call)
+
+# 运行时检查：画一帧之后，画面上必须出现 HUD 的深色面板像素
+g.draw()
+GL.glReadBuffer(GL.GL_BACK)
+w, h = glfw.get_framebuffer_size(g.window)
+d = GL.glReadPixels(0, 0, w, h, GL.GL_RGB, GL.GL_UNSIGNED_BYTE)
+a = np.frombuffer(d, dtype=np.uint8).reshape(h, w, 3)[::-1]
+panel = a[h - 150:h - 40, 10:240]          # 左下角空速面板区域
+dark = int(((panel[:, :, 0] < 70) & (panel[:, :, 1] < 80)
+            & (panel[:, :, 2] < 90)).sum())
+print('     左下角面板区域深色像素 = %d' % dark)
+check('画面左下角真的画出了面板', dark > 2000, '%d 个像素' % dark)
+check('show_hud 没有被意外关掉', bool(g.show_hud))
+
+glfw.terminate()
+
 print()
 print('  HUD 排版检查: %s' % ('全部通过' if ok else '有失败项'))
 sys.exit(0 if ok else 1)

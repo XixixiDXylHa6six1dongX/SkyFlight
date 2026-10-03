@@ -1,5 +1,39 @@
 # Changelog
 
+## v1.6.1 — 2026-10-03
+
+### Fixed
+
+- **The entire instrument panel had disappeared.** When the particle pass was
+  added to `draw()` in v1.6.0, it replaced the HUD block at the end of the
+  method instead of being inserted before it — so `draw_hud()` was **never
+  called**. Nothing raised an error and nothing was logged; the panel, compass,
+  version number and gear readout were simply gone.
+  The HUD call is restored at the end of `draw()`, after the particles (it must
+  be last, so it draws on top of the 3D scene).
+
+- **A single HUD error no longer turns the panel off permanently.** The old
+  `except` clause set `show_hud = False` on the very first failure, so one
+  transient problem would hide the panel for the rest of the session. It now
+  prints the reason for the first three failures and only disables the HUD after
+  60 consecutive failures.
+
+### Added
+
+- A regression guard in `tests/hud_layout.py` for exactly this class of bug,
+  because a missing draw call is invisible to every other test:
+
+  | Check | What it catches |
+  |---|---|
+  | `draw_hud` appears in the AST of `draw()` | the call being deleted or overwritten |
+  | the bottom-left panel region contains > 2000 dark pixels after `draw()` | the call existing but not reaching the screen |
+  | `show_hud` is still True afterwards | the panel being silently disabled |
+
+  Both checks fail on the v1.6.0 code and pass after the fix, so the bug cannot
+  come back unnoticed.
+
+---
+
 ## v1.6.0 — 2026-10-03
 
 ### Added

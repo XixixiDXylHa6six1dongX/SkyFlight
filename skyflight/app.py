@@ -746,8 +746,23 @@ class SkyFlightApp:
             self.gear_mesh.draw()
 
         # ---------- 粒子特效（爆炸 / 扬尘 / 烟 / 凝结尾）
-        # 放在最后画，这样烟和火会盖在飞机和地景之上（爆炸本来就该挡住机身）。
+        # 放在飞机之后画，这样烟和火会盖在飞机和地景之上（爆炸本来就该挡住机身）。
         self._draw_particles(VP)
+
+        # ---------- 仪表盘叠加层（必须最后画，3D 场景之上）
+        if self.show_hud:
+            try:
+                hudmod.draw_hud(self.hud, self.hud_shader, self.craft,
+                                float(fb_w), float(fb_h), self.fps)
+            except Exception as e:
+                # 不要把 HUD 直接永久关掉 —— 那样一次偶发错误就再也看不到仪表盘了。
+                # 这里只在启动头几次失败时禁用，并打印原因，方便定位问题。
+                self._hud_errors = getattr(self, '_hud_errors', 0) + 1
+                if self._hud_errors <= 3:
+                    print('  [HUD] 绘制失败（第 %d 次）: %s' % (self._hud_errors, e))
+                if self._hud_errors > 60:
+                    self.show_hud = False
+                    print('  [HUD] 连续失败太多次，已关闭仪表盘')
 
     def _draw_particles(self, VP):
         """画粒子：方片展开到相机平面，所以要把相机的右/上向量传进去"""
