@@ -1,0 +1,19 @@
+# Bundled Python runtime (185 MB) — needed to run, not part of the source.
+runtime/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# Local scratch
+*.log
+_*.png
