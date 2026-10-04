@@ -109,6 +109,53 @@ print('     左下角面板区域深色像素 = %d' % dark)
 check('画面左下角真的画出了面板', dark > 2000, '%d 个像素' % dark)
 check('show_hud 没有被意外关掉', bool(g.show_hud))
 
+
+def panel_dark():
+    """画一帧，返回左下角面板区域的深色像素数"""
+    g.draw()
+    GL.glReadBuffer(GL.GL_BACK)
+    d = GL.glReadPixels(0, 0, w, h, GL.GL_RGB, GL.GL_UNSIGNED_BYTE)
+    a = np.frombuffer(d, dtype=np.uint8).reshape(h, w, 3)[::-1]
+    reg = a[h - 150:h - 40, 10:240]
+    return int(((reg[:, :, 0] < 70) & (reg[:, :, 1] < 80)
+                & (reg[:, :, 2] < 90)).sum())
+
+
+# ---------- 关键回归 2：有粒子的时候 HUD 也必须还在
+# 真实教训：曾经有一段重复的 draw_hud 被误放进 _draw_particles() 里。
+# 平时 _draw_particles 没粒子就直接 return，所以看不出问题；
+# 一旦坠毁产生粒子，那段代码就会执行，却拿不到 fb_w / fb_h → NameError
+# → 被 except 吞掉并 show_hud = False → 仪表盘永久消失。
+print()
+print('  有粒子时（坠毁场景）仪表盘是否还在:')
+g.craft.pos = np.array([0.0, 120.0, 200.0])
+g.craft.pitch = -0.6
+g.craft.speed_val = 90.0
+g.craft.vel = np.array([5.0, -25.0, -80.0])
+g.craft.on_ground = False
+g.craft.crashed = False
+g.throttle_cmd = 0.6
+for _ in range(300):
+    g.update(1 / 60.0)
+    if g.craft.crashed:
+        break
+check('确实坠毁并产生了粒子', bool(g.craft.crashed) and g.particles.count() > 0,
+      '粒子 %d 个' % g.particles.count())
+
+dark2 = panel_dark()
+check('坠毁时 HUD 没有被关掉', bool(g.show_hud))
+check('坠毁时面板仍然画出来', dark2 > 2000, '%d 个像素' % dark2)
+
+# 按 R 重来之后也要还在
+g._on_key(g.window, glfw.KEY_R, 0, glfw.PRESS, 0)
+g.update(1 / 60.0)
+g._on_key(g.window, glfw.KEY_R, 0, glfw.RELEASE, 0)
+for _ in range(150):
+    g.update(1 / 60.0)
+dark3 = panel_dark()
+check('按 R 重来后 HUD 还在', bool(g.show_hud) and dark3 > 2000,
+      '深色像素 %d' % dark3)
+
 glfw.terminate()
 
 print()

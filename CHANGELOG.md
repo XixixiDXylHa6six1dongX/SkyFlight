@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.6.2 — 2026-10-03
+
+### Fixed
+
+- **The instrument panel vanished whenever you crashed, and stayed gone after
+  pressing `R`.** The v1.6.1 fix inserted the HUD call in the wrong place: a
+  second, duplicate block was left **inside `_draw_particles()`**. That produced
+  a bug which only appears in one specific situation:
+
+  | Situation | What happened |
+  |---|---|
+  | Normal flight | `_draw_particles()` returns immediately (no particles), so the duplicate block never ran. The real HUD call at the end of `draw()` worked, so the panel looked fine |
+  | Any crash | particles exist, so execution reached the duplicate block — but `fb_w` / `fb_h` are locals of `draw()` and do not exist there → `NameError` → swallowed by `except: show_hud = False` → **panel gone permanently** |
+
+  So the panel worked until the first crash and never came back — exactly what
+  was reported. The duplicate block is removed; `draw_hud()` is now called from
+  **exactly one place**, at the end of `draw()`. A comment at that spot records
+  why nothing may be added there.
+
+### Added
+
+- `tests/hud_layout.py` now also replays the crash-and-restart sequence: it
+  asserts particles actually exist, that `show_hud` survives the crash, that the
+  panel is still drawn during the crash (dark pixels in the bottom-left region),
+  and that it is still there after pressing `R`. This is the check that would
+  have caught the bug, and it fails on the v1.6.1 code.
+
+---
+
 ## v1.6.1 — 2026-10-03
 
 ### Fixed

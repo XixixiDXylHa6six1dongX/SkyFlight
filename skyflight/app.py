@@ -810,13 +810,13 @@ class SkyFlightApp:
         GL.glDepthMask(GL.GL_TRUE)
         GL.glDisable(GL.GL_BLEND)
 
-        # ---------- 仪表盘叠加层
-        if self.show_hud:
-            try:
-                hudmod.draw_hud(self.hud, self.hud_shader, self.craft,
-                                float(fb_w), float(fb_h), self.fps)
-            except Exception:
-                self.show_hud = False
+    # 注意：这里**不能**再放一段"画仪表盘"的代码！
+    # 之前这里多了一段重复的 hudmod.draw_hud(...)，但它在 _draw_particles 里面，
+    # 而 _draw_particles 只在"有粒子"时才会执行到这一行 —— 于是：
+    #   正常飞行：函数一开始就 return，走不到这段，draw() 末尾的 HUD 正常画 → 看不出问题
+    #   坠毁时： 有粒子，走到这段，但这里没有 fb_w / fb_h 变量 → NameError
+    #            → 被 except 抓住 → show_hud = False → 仪表盘永久消失
+    # 这是用户报"坠毁重来后仪表盘消失"的真正原因。HUD 只在 draw() 末尾画一次。
 
     # ------------------------------------------------ 运行
     def _print_banner(self, glyph_count=0):
